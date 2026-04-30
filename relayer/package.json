@@ -1,0 +1,39 @@
+{
+  "name": "@agentintent/relayer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Intent Batcher — collects signed user intents and submits them on-chain via ERC-4337",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:single": "vitest run --reporter=verbose",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "simulate": "tsx src/simulator/agent_simulator.ts",
+    "simulate:mock": "SIMULATOR_PRICE_FEED=mock tsx src/simulator/agent_simulator.ts",
+    "demo:submit": "tsx scripts/demo_submit.ts"
+  },
+  "dependencies": {
+    "viem": "^2.21.0",
+    "permissionless": "^0.2.0",
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "zod": "^3.23.8",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.3.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "agentintent-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentIntent Protocol — ERC-4337 intent batching monorepo",
+  "workspaces": [
+    "relayer",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:relayer": "npm run dev --workspace=relayer",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "build:relayer": "npm run build --workspace=relayer",
+    "build:frontend": "npm run build --workspace=frontend",
+    "test:relayer": "npm run test --workspace=relayer",
+    "test:contracts": "cd contracts && forge test",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "demo": "bash run_demo.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

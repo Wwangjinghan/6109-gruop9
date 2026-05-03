@@ -2,15 +2,16 @@ import { IntentForm } from "@/components/IntentForm";
 
 export default function Home() {
   return (
-    <div className="flex flex-col items-center justify-center min-h-full gap-8 w-full p-8">
-      <div className="text-center space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Submit an Intent</h1>
-        <p className="text-muted-foreground max-w-md">
-          Sign a transaction intent with your wallet. The relayer batches and submits it
-          to the on-chain registry for ERC-4337 bundler execution.
-        </p>
+    <div className="flex flex-col items-center justify-start min-h-full pt-16 pb-16 px-4">
+      <div className="w-full max-w-lg space-y-8">
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold tracking-tight">Submit Intent</h1>
+          <p className="text-sm text-muted-foreground">
+            Sign an intent off-chain. The relayer batches and submits it via ERC-4337.
+          </p>
+        </div>
+        <IntentForm />
       </div>
-      <IntentForm />
     </div>
   );
 }

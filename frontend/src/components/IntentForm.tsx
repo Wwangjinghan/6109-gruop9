@@ -4,8 +4,6 @@ import { useState } from "react";
 import { useWalletClient, useAccount } from "wagmi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { submitIntent, type IntentParams } from "@/lib/intentClient";
 
 type ActionType = "SWAP" | "TRANSFER" | "DCA" | "REBALANCE";
@@ -17,7 +15,12 @@ const ACTION_LABELS: Record<ActionType, string> = {
   REBALANCE: "Rebalance",
 };
 
-// ─── Per-action field state shapes ───────────────────────────────────────────
+const ACTION_DESC: Record<ActionType, string> = {
+  SWAP: "Exchange one token for another via the DEX router",
+  TRANSFER: "Send ERC-20 tokens or native ETH to an address",
+  DCA: "Recurring swap at fixed intervals",
+  REBALANCE: "Rebalance a portfolio to target weights",
+};
 
 interface SwapFields {
   tokenIn: string; tokenOut: string; amountIn: string; minAmountOut: string; recipient: string;
@@ -46,8 +49,6 @@ function defaultRebalance(): RebalanceFields {
   return { tokens: "", targetWeightsBps: "", toleranceBps: "50" };
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
 export function IntentForm() {
   const { address, isConnected } = useAccount();
   const { data: walletClient } = useWalletClient();
@@ -74,12 +75,7 @@ export function IntentForm() {
       };
     }
     if (action === "TRANSFER") {
-      return {
-        action: "TRANSFER",
-        token: transferF.token,
-        to: transferF.to,
-        amount: transferF.amount,
-      };
+      return { action: "TRANSFER", token: transferF.token, to: transferF.to, amount: transferF.amount };
     }
     if (action === "DCA") {
       return {
@@ -91,7 +87,6 @@ export function IntentForm() {
         totalIntervals: parseInt(dcaF.totalIntervals, 10),
       };
     }
-    // REBALANCE
     return {
       action: "REBALANCE",
       tokens: rebalanceF.tokens.split(",").map((t) => t.trim()),
@@ -117,113 +112,116 @@ export function IntentForm() {
     }
   };
 
-  const statusBadge = {
-    idle: null,
-    signing: <Badge variant="secondary">Signing…</Badge>,
-    submitting: <Badge variant="secondary">Submitting…</Badge>,
-    success: <Badge variant="default">Submitted</Badge>,
-    error: <Badge variant="destructive">Error</Badge>,
-  }[status];
-
   const busy = status === "signing" || status === "submitting";
 
   return (
-    <Card className="w-full max-w-lg">
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between">
-          Submit Intent
-          {statusBadge}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        {!isConnected ? (
-          <p className="text-muted-foreground text-sm">Connect your wallet to submit intents.</p>
-        ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium">
-                Connected: <span className="font-mono text-xs">{address}</span>
-              </label>
-            </div>
+    <div className="space-y-6">
+      {/* Action selector */}
+      <div className="grid grid-cols-4 gap-1.5 p-1 bg-muted rounded-md">
+        {(["SWAP", "TRANSFER", "DCA", "REBALANCE"] as ActionType[]).map((a) => (
+          <button
+            key={a}
+            type="button"
+            onClick={() => setAction(a)}
+            className={`py-1.5 rounded text-xs font-medium transition-all duration-150 ${
+              action === a
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {ACTION_LABELS[a]}
+          </button>
+        ))}
+      </div>
 
-            {/* Action type selector */}
-            <div className="space-y-1">
-              <label className="text-sm font-medium">Action</label>
-              <div className="flex gap-2 flex-wrap">
-                {(["SWAP", "TRANSFER", "DCA", "REBALANCE"] as ActionType[]).map((a) => (
-                  <button
-                    key={a}
-                    type="button"
-                    onClick={() => setAction(a)}
-                    className={`px-3 py-1 rounded text-sm border transition-colors ${
-                      action === a
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "border-border hover:bg-muted"
-                    }`}
-                  >
-                    {ACTION_LABELS[a]}
-                  </button>
-                ))}
+      {/* Action description */}
+      <p className="text-xs text-muted-foreground">{ACTION_DESC[action]}</p>
+
+      {!isConnected ? (
+        <div className="border border-border rounded-md px-4 py-8 text-center">
+          <p className="text-sm text-muted-foreground">Connect your wallet to continue</p>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Wallet row */}
+          <div className="flex items-center justify-between text-xs text-muted-foreground border-b border-border pb-3">
+            <span>Connected</span>
+            <span className="font-mono">{address?.slice(0, 6)}…{address?.slice(-4)}</span>
+          </div>
+
+          {/* SWAP fields */}
+          {action === "SWAP" && (
+            <div className="space-y-3">
+              <Field label="Token In" value={swapF.tokenIn} onChange={(v) => setSwapF((f) => ({ ...f, tokenIn: v }))} placeholder="0x…" required />
+              <Field label="Token Out" value={swapF.tokenOut} onChange={(v) => setSwapF((f) => ({ ...f, tokenOut: v }))} placeholder="0x…" required />
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Amount In (wei)" value={swapF.amountIn} onChange={(v) => setSwapF((f) => ({ ...f, amountIn: v }))} placeholder="1000000" required />
+                <Field label="Min Out (wei)" value={swapF.minAmountOut} onChange={(v) => setSwapF((f) => ({ ...f, minAmountOut: v }))} placeholder="0" />
+              </div>
+              <Field label="Recipient (optional)" value={swapF.recipient} onChange={(v) => setSwapF((f) => ({ ...f, recipient: v }))} placeholder="0x… defaults to account" />
+            </div>
+          )}
+
+          {/* TRANSFER fields */}
+          {action === "TRANSFER" && (
+            <div className="space-y-3">
+              <Field label="Token (0x000…000 for ETH)" value={transferF.token} onChange={(v) => setTransferF((f) => ({ ...f, token: v }))} placeholder="0x…" required />
+              <Field label="Recipient" value={transferF.to} onChange={(v) => setTransferF((f) => ({ ...f, to: v }))} placeholder="0x…" required />
+              <Field label="Amount (wei)" value={transferF.amount} onChange={(v) => setTransferF((f) => ({ ...f, amount: v }))} placeholder="1000000000000000000" required />
+            </div>
+          )}
+
+          {/* DCA fields */}
+          {action === "DCA" && (
+            <div className="space-y-3">
+              <Field label="Token In" value={dcaF.tokenIn} onChange={(v) => setDcaF((f) => ({ ...f, tokenIn: v }))} placeholder="0x…" required />
+              <Field label="Token Out" value={dcaF.tokenOut} onChange={(v) => setDcaF((f) => ({ ...f, tokenOut: v }))} placeholder="0x…" required />
+              <Field label="Amount Per Interval (wei)" value={dcaF.amountPerInterval} onChange={(v) => setDcaF((f) => ({ ...f, amountPerInterval: v }))} placeholder="1000000" required />
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Interval (s)" value={dcaF.intervalSeconds} onChange={(v) => setDcaF((f) => ({ ...f, intervalSeconds: v }))} placeholder="86400" required />
+                <Field label="Intervals" value={dcaF.totalIntervals} onChange={(v) => setDcaF((f) => ({ ...f, totalIntervals: v }))} placeholder="7" required />
               </div>
             </div>
+          )}
 
-            {/* SWAP fields */}
-            {action === "SWAP" && (
-              <>
-                <Field label="Token In (address)" value={swapF.tokenIn} onChange={(v) => setSwapF((f) => ({ ...f, tokenIn: v }))} placeholder="0x..." required />
-                <Field label="Token Out (address)" value={swapF.tokenOut} onChange={(v) => setSwapF((f) => ({ ...f, tokenOut: v }))} placeholder="0x..." required />
-                <Field label="Amount In (wei)" value={swapF.amountIn} onChange={(v) => setSwapF((f) => ({ ...f, amountIn: v }))} placeholder="1000000" required />
-                <Field label="Min Amount Out (wei)" value={swapF.minAmountOut} onChange={(v) => setSwapF((f) => ({ ...f, minAmountOut: v }))} placeholder="0" />
-                <Field label="Recipient (optional)" value={swapF.recipient} onChange={(v) => setSwapF((f) => ({ ...f, recipient: v }))} placeholder="0x… (defaults to account)" />
-              </>
-            )}
+          {/* REBALANCE fields */}
+          {action === "REBALANCE" && (
+            <div className="space-y-3">
+              <Field label="Tokens (comma-separated)" value={rebalanceF.tokens} onChange={(v) => setRebalanceF((f) => ({ ...f, tokens: v }))} placeholder="0xA…, 0xB…" required />
+              <Field label="Target weights bps (sum = 10000)" value={rebalanceF.targetWeightsBps} onChange={(v) => setRebalanceF((f) => ({ ...f, targetWeightsBps: v }))} placeholder="5000, 5000" required />
+              <Field label="Tolerance bps" value={rebalanceF.toleranceBps} onChange={(v) => setRebalanceF((f) => ({ ...f, toleranceBps: v }))} placeholder="50" />
+            </div>
+          )}
 
-            {/* TRANSFER fields */}
-            {action === "TRANSFER" && (
-              <>
-                <Field label="Token (0x000…000 for ETH)" value={transferF.token} onChange={(v) => setTransferF((f) => ({ ...f, token: v }))} placeholder="0x…" required />
-                <Field label="Recipient" value={transferF.to} onChange={(v) => setTransferF((f) => ({ ...f, to: v }))} placeholder="0x…" required />
-                <Field label="Amount (wei)" value={transferF.amount} onChange={(v) => setTransferF((f) => ({ ...f, amount: v }))} placeholder="1000000000000000000" required />
-              </>
-            )}
+          {/* Error */}
+          {error && (
+            <p className="text-xs text-red-400 border border-red-900/40 bg-red-950/20 rounded px-3 py-2">
+              {error}
+            </p>
+          )}
 
-            {/* DCA fields */}
-            {action === "DCA" && (
-              <>
-                <Field label="Token In (address)" value={dcaF.tokenIn} onChange={(v) => setDcaF((f) => ({ ...f, tokenIn: v }))} placeholder="0x…" required />
-                <Field label="Token Out (address)" value={dcaF.tokenOut} onChange={(v) => setDcaF((f) => ({ ...f, tokenOut: v }))} placeholder="0x…" required />
-                <Field label="Amount Per Interval (wei)" value={dcaF.amountPerInterval} onChange={(v) => setDcaF((f) => ({ ...f, amountPerInterval: v }))} placeholder="1000000" required />
-                <Field label="Interval (seconds)" value={dcaF.intervalSeconds} onChange={(v) => setDcaF((f) => ({ ...f, intervalSeconds: v }))} placeholder="86400" required />
-                <Field label="Total Intervals" value={dcaF.totalIntervals} onChange={(v) => setDcaF((f) => ({ ...f, totalIntervals: v }))} placeholder="7" required />
-              </>
-            )}
+          {/* Success */}
+          {intentId && status === "success" && (
+            <div className="border border-emerald-900/40 bg-emerald-950/20 rounded px-3 py-2 space-y-0.5">
+              <p className="text-xs text-emerald-400 font-medium">Intent submitted</p>
+              <p className="text-xs text-muted-foreground font-mono break-all">{intentId}</p>
+            </div>
+          )}
 
-            {/* REBALANCE fields */}
-            {action === "REBALANCE" && (
-              <>
-                <Field label="Token addresses (comma-separated)" value={rebalanceF.tokens} onChange={(v) => setRebalanceF((f) => ({ ...f, tokens: v }))} placeholder="0xA…, 0xB…" required />
-                <Field label="Target weights bps (comma-separated, sum=10000)" value={rebalanceF.targetWeightsBps} onChange={(v) => setRebalanceF((f) => ({ ...f, targetWeightsBps: v }))} placeholder="5000, 5000" required />
-                <Field label="Tolerance bps" value={rebalanceF.toleranceBps} onChange={(v) => setRebalanceF((f) => ({ ...f, toleranceBps: v }))} placeholder="50" />
-              </>
-            )}
-
-            {error && <p className="text-destructive text-sm">{error}</p>}
-            {intentId && (
-              <p className="text-sm text-muted-foreground break-all">
-                Intent ID: <span className="font-mono">{intentId}</span>
-              </p>
-            )}
-            <Button type="submit" className="w-full" disabled={busy}>
-              Sign &amp; Submit Intent
-            </Button>
-          </form>
-        )}
-      </CardContent>
-    </Card>
+          <Button
+            type="submit"
+            className="w-full h-9 text-sm font-medium"
+            disabled={busy}
+          >
+            {busy
+              ? status === "signing" ? "Waiting for signature…" : "Submitting…"
+              : "Sign & Submit"}
+          </Button>
+        </form>
+      )}
+    </div>
   );
 }
-
-// ─── Small field helper ───────────────────────────────────────────────────────
 
 function Field({
   label, value, onChange, placeholder, required,
@@ -235,13 +233,14 @@ function Field({
   required?: boolean;
 }) {
   return (
-    <div className="space-y-1">
-      <label className="text-sm font-medium">{label}</label>
+    <div className="space-y-1.5">
+      <label className="text-xs font-medium text-muted-foreground">{label}</label>
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         required={required}
+        className="h-8 text-sm bg-muted border-border/60 focus:border-border placeholder:text-muted-foreground/40"
       />
     </div>
   );

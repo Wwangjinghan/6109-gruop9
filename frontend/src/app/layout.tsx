@@ -17,17 +17,29 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body className={inter.className}>
         <Providers>
-          <header className="border-b px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-6">
-              <span className="font-semibold tracking-tight">AgentIntent Protocol</span>
-              <nav className="flex items-center gap-4 text-sm text-muted-foreground">
-                <Link href="/" className="hover:text-foreground transition-colors">Submit</Link>
-                <Link href="/dashboard" className="hover:text-foreground transition-colors">Dashboard</Link>
+          <header className="border-b border-border/60 px-6 h-14 flex items-center justify-between sticky top-0 z-50 bg-background/95 backdrop-blur-sm">
+            <div className="flex items-center gap-8">
+              <span className="font-semibold tracking-tight text-sm text-foreground">
+                AgentIntent
+              </span>
+              <nav className="flex items-center gap-6">
+                <Link
+                  href="/"
+                  className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
+                >
+                  Submit
+                </Link>
+                <Link
+                  href="/dashboard"
+                  className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
+                >
+                  Dashboard
+                </Link>
               </nav>
             </div>
             <WalletConnector />
           </header>
-          <main className="min-h-[calc(100vh-65px)]">
+          <main className="min-h-[calc(100vh-56px)]">
             {children}
           </main>
         </Providers>

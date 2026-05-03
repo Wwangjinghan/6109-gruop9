@@ -1,26 +1,31 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { IntentRecord, IntentStatus } from "@/lib/dashboardTypes";
 
-const STATUS_VARIANT: Record<IntentStatus, "secondary" | "default" | "outline" | "destructive"> = {
-  pending: "secondary",
-  batched: "outline",
-  executed: "default",
-  failed: "destructive",
+const STATUS_STYLES: Record<IntentStatus, string> = {
+  pending:  "text-amber-400 bg-amber-950/40",
+  batched:  "text-zinc-300 bg-zinc-800",
+  executed: "text-emerald-400 bg-emerald-950/40",
+  failed:   "text-red-400 bg-red-950/40",
 };
 
 const STATUS_LABEL: Record<IntentStatus, string> = {
-  pending: "Pending",
-  batched: "Batched",
-  executed: "Completed",
-  failed: "Failed",
+  pending:  "Pending",
+  batched:  "Batched",
+  executed: "Done",
+  failed:   "Failed",
 };
 
-function truncate(hex: string, chars = 8) {
+const ACTION_STYLES: Record<string, string> = {
+  SWAP:      "text-zinc-200",
+  TRANSFER:  "text-zinc-200",
+  DCA:       "text-zinc-200",
+  REBALANCE: "text-zinc-200",
+};
+
+function truncate(hex: string, chars = 6) {
   if (hex.length <= chars * 2 + 2) return hex;
-  return `${hex.slice(0, chars + 2)}…${hex.slice(-chars)}`;
+  return `${hex.slice(0, chars + 2)}…${hex.slice(-4)}`;
 }
 
 function timeAgo(ms: number) {
@@ -39,66 +44,78 @@ export function IntentQueuePanel({ records, isLive = false }: Props) {
   const sorted = [...records].sort((a, b) => b.submittedAt - a.submittedAt);
 
   return (
-    <Card className="h-full flex flex-col">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center justify-between text-base">
-          <span>Intent Queue</span>
-          <div className="flex items-center gap-2">
-            {isLive && (
-              <span className="flex items-center gap-1 text-xs font-normal text-emerald-600">
-                <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                Live
+    <div className="border border-border/60 rounded-md overflow-hidden">
+      {/* Table header */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/60 bg-muted/30">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium">Intent Queue</span>
+          {isLive && (
+            <span className="flex items-center gap-1 text-xs text-emerald-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse" />
+              Live
+            </span>
+          )}
+        </div>
+        <span className="text-xs text-muted-foreground tabular-nums">{records.length} total</span>
+      </div>
+
+      {/* Column labels */}
+      <div className="grid grid-cols-[80px_1fr_100px_80px_80px_70px] gap-4 px-4 py-1.5 border-b border-border/40 bg-muted/20">
+        {["Action", "Intent ID", "Batch", "Latency", "Gas", "Status"].map((h) => (
+          <span key={h} className="text-xs text-muted-foreground/60 font-medium uppercase tracking-wider">{h}</span>
+        ))}
+      </div>
+
+      {sorted.length === 0 ? (
+        <div className="px-4 py-10 text-center text-sm text-muted-foreground">No intents yet.</div>
+      ) : (
+        <div className="overflow-y-auto max-h-[380px] divide-y divide-border/30">
+          {sorted.map((r) => (
+            <div
+              key={r.intentId}
+              className="grid grid-cols-[80px_1fr_100px_80px_80px_70px] gap-4 items-center px-4 py-2.5 hover:bg-muted/20 transition-colors"
+            >
+              {/* Action */}
+              <span className={`text-xs font-semibold ${ACTION_STYLES[r.action] ?? "text-zinc-200"}`}>
+                {r.action}
               </span>
-            )}
-            <Badge variant="secondary" className="font-mono text-xs">
-              {records.length}
-            </Badge>
-          </div>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="flex-1 overflow-hidden p-0">
-        {sorted.length === 0 ? (
-          <p className="text-muted-foreground text-sm text-center py-8">No intents yet.</p>
-        ) : (
-          <div className="overflow-y-auto max-h-[420px] divide-y">
-            {sorted.map((r) => (
-              <div key={r.intentId} className="flex items-start justify-between px-6 py-3 hover:bg-muted/40 transition-colors">
-                <div className="space-y-0.5 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-foreground">{r.action}</span>
-                    <span className="text-xs text-muted-foreground font-mono">{truncate(r.intentId)}</span>
-                  </div>
-                  <div className="text-xs text-muted-foreground">
-                    {r.userId}
-                    {r.batchId && (
-                      <span className="ml-2 text-muted-foreground/60 font-mono">
-                        batch: {truncate(r.batchId, 4)}
-                      </span>
-                    )}
-                    {r.latencyMs != null && r.status === "executed" && (
-                      <span className="ml-2 text-emerald-600/80">{r.latencyMs} ms</span>
-                    )}
-                    {r.gasUsed != null && r.status === "executed" && (
-                      <span className="ml-2 text-blue-600/70 font-mono">{r.gasUsed.toLocaleString()} gas</span>
-                    )}
-                  </div>
-                  {r.status === "failed" && r.error && (
-                    <div className="text-xs text-destructive/80 truncate max-w-[260px]" title={r.error}>
-                      {r.error}
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-col items-end gap-1 shrink-0 ml-4">
-                  <Badge variant={STATUS_VARIANT[r.status]} className="text-xs">
-                    {STATUS_LABEL[r.status]}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">{timeAgo(r.submittedAt)}</span>
-                </div>
+
+              {/* Intent ID + user */}
+              <div className="min-w-0">
+                <p className="text-xs font-mono text-zinc-300 truncate">{truncate(r.intentId)}</p>
+                <p className="text-xs text-muted-foreground/60 truncate">{r.userId}</p>
+                {r.status === "failed" && r.error && (
+                  <p className="text-xs text-red-400/80 truncate mt-0.5" title={r.error}>{r.error}</p>
+                )}
               </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+
+              {/* Batch */}
+              <span className="text-xs font-mono text-muted-foreground truncate">
+                {r.batchId ? truncate(r.batchId, 4) : "—"}
+              </span>
+
+              {/* Latency */}
+              <span className={`text-xs tabular-nums ${
+                r.latencyMs != null && r.status === "executed"
+                  ? r.latencyMs < 2000 ? "text-emerald-400" : r.latencyMs < 5000 ? "text-amber-400" : "text-red-400"
+                  : "text-muted-foreground/40"
+              }`}>
+                {r.latencyMs != null && r.status === "executed" ? `${r.latencyMs} ms` : "—"}
+              </span>
+
+              {/* Gas */}
+              <span className="text-xs font-mono tabular-nums text-muted-foreground">
+                {r.gasUsed != null && r.status === "executed" ? r.gasUsed.toLocaleString() : "—"}
+              </span>
+
+              {/* Status badge */}
+              <span className={`text-xs px-2 py-0.5 rounded font-medium w-fit ${STATUS_STYLES[r.status]}`}>
+                {STATUS_LABEL[r.status]}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

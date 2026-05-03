@@ -1,32 +1,27 @@
 "use client";
 
-import { Card, CardContent } from "@/components/ui/card";
 import type { DashboardMetrics } from "@/lib/dashboardTypes";
 
 interface StatCardProps {
   label: string;
   value: string | number;
   sub?: string;
-  accent?: "green" | "yellow" | "red" | "blue" | "default";
+  accent?: "green" | "yellow" | "red" | "default";
 }
 
-const ACCENT_CLASSES: Record<NonNullable<StatCardProps["accent"]>, string> = {
-  green: "text-emerald-600",
-  yellow: "text-amber-500",
-  red: "text-destructive",
-  blue: "text-blue-600",
-  default: "text-foreground",
-};
-
 function StatCard({ label, value, sub, accent = "default" }: StatCardProps) {
+  const valueColor =
+    accent === "green"  ? "text-emerald-400" :
+    accent === "yellow" ? "text-amber-400"   :
+    accent === "red"    ? "text-red-400"      :
+    "text-foreground";
+
   return (
-    <Card>
-      <CardContent className="pt-5 pb-4">
-        <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide mb-1">{label}</p>
-        <p className={`text-2xl font-bold tabular-nums ${ACCENT_CLASSES[accent]}`}>{value}</p>
-        {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
-      </CardContent>
-    </Card>
+    <div className="bg-card border border-border/60 rounded-md px-4 py-3 space-y-1">
+      <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">{label}</p>
+      <p className={`text-2xl font-semibold tabular-nums leading-none ${valueColor}`}>{value}</p>
+      {sub && <p className="text-xs text-muted-foreground/60">{sub}</p>}
+    </div>
   );
 }
 
@@ -36,55 +31,33 @@ interface Props {
 
 export function MetricsSummary({ metrics }: Props) {
   const {
-    totalIntents,
-    pendingCount,
-    executedCount,
-    failedCount,
-    failedRatePct,
-    avgBatchSize,
-    totalGasSavedPct,
-    avgLatencyMs,
-    maxLatencyMs,
-    avgGasPerBatch,
-    gasDataPoints,
+    totalIntents, pendingCount, executedCount, failedCount,
+    failedRatePct, avgBatchSize, totalGasSavedPct,
+    avgLatencyMs, maxLatencyMs, avgGasPerBatch, gasDataPoints,
   } = metrics;
 
   const latencyLabel = avgLatencyMs != null ? `${avgLatencyMs} ms` : "—";
   const latencySub   = maxLatencyMs != null ? `max ${maxLatencyMs} ms` : "no data yet";
 
-  // Gas Saved sub-label: indicate whether value is from real receipts or estimate
   const gasSavedSub = gasDataPoints > 0
     ? `${gasDataPoints} batch${gasDataPoints > 1 ? "es" : ""} · real receipts`
     : `avg batch ${avgBatchSize > 0 ? `${avgBatchSize}x` : "—"} · estimated`;
 
-  // avgGasPerBatch display
-  const gasPerBatchLabel = avgGasPerBatch != null
-    ? avgGasPerBatch.toLocaleString()
-    : "—";
-  const gasPerBatchSub = avgGasPerBatch != null
-    ? `${gasDataPoints} on-chain sample${gasDataPoints !== 1 ? "s" : ""}`
+  const gasPerBatchLabel = avgGasPerBatch != null ? avgGasPerBatch.toLocaleString() : "—";
+  const gasPerBatchSub   = avgGasPerBatch != null
+    ? `${gasDataPoints} sample${gasDataPoints !== 1 ? "s" : ""}`
     : "awaiting receipts";
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-      <StatCard
-        label="Total Intents"
-        value={totalIntents}
-        sub="all time"
-        accent="blue"
-      />
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+      <StatCard label="Total" value={totalIntents} sub="all time" />
       <StatCard
         label="Pending"
         value={pendingCount}
         sub="in queue"
         accent={pendingCount > 0 ? "yellow" : "default"}
       />
-      <StatCard
-        label="Completed"
-        value={executedCount}
-        sub="on-chain"
-        accent="green"
-      />
+      <StatCard label="Completed" value={executedCount} sub="on-chain" accent="green" />
       <StatCard
         label="Failed"
         value={failedCount > 0 ? `${failedCount} (${failedRatePct}%)` : "0"}
@@ -112,7 +85,6 @@ export function MetricsSummary({ metrics }: Props) {
         label="Avg Gas / Batch"
         value={gasPerBatchLabel}
         sub={gasPerBatchSub}
-        accent={avgGasPerBatch != null ? "blue" : "default"}
       />
     </div>
   );

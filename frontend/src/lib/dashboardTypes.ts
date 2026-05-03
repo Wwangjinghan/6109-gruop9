@@ -41,6 +41,7 @@ export interface GasSavingsPoint {
   gasSavedPct: number;  // 0–100
   gasIndividual: number; // hypothetical (intentCount * GAS_PER_INTENT)
   gasBatched: number;    // actual or estimated
+  gasUsedReal?: number;  // present when gasBatched came from a real on-chain receipt
 }
 
 /** One point on the latency timeseries. */

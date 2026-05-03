@@ -51,6 +51,41 @@ export function createRouter(batcher: IntentBatcher, scheduler?: DcaScheduler): 
   });
 
   /**
+   * GET /intents
+   * Return all intents, most-recent first. Supports ?limit=N (default 100).
+   */
+  router.get("/intents", (req: Request, res: Response) => {
+    const limit = Math.min(parseInt((req.query.limit as string) ?? "100", 10) || 100, 500);
+    const all = batcher.getAllRecords()
+      .sort((a, b) => b.receivedAt - a.receivedAt)
+      .slice(0, limit);
+    return res.json(
+      all.map((record) => {
+        const latencyMs =
+          record.executedAt != null && record.submittedAt != null
+            ? record.executedAt - record.submittedAt
+            : record.submittedAt != null
+              ? Date.now() - record.submittedAt
+              : undefined;
+        return {
+          intentId: record.id,
+          action: record.payload.action,
+          userId: record.payload.userId,
+          status: record.status,
+          batchId: record.batchId,
+          txHash: record.txHash,
+          error: record.error,
+          receivedAt: record.receivedAt,
+          submittedAt: record.submittedAt,
+          executedAt: record.executedAt,
+          latencyMs,
+          gasUsed: record.gasUsed != null ? record.gasUsed.toString() : undefined,
+        };
+      }),
+    );
+  });
+
+  /**
    * GET /intents/:id
    * Return the current status of a specific intent.
    */

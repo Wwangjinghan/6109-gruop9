@@ -78,6 +78,9 @@ export function IntentQueuePanel({ records, isLive = false }: Props) {
                     {r.latencyMs != null && r.status === "executed" && (
                       <span className="ml-2 text-emerald-600/80">{r.latencyMs} ms</span>
                     )}
+                    {r.gasUsed != null && r.status === "executed" && (
+                      <span className="ml-2 text-blue-600/70 font-mono">{r.gasUsed.toLocaleString()} gas</span>
+                    )}
                   </div>
                   {r.status === "failed" && r.error && (
                     <div className="text-xs text-destructive/80 truncate max-w-[260px]" title={r.error}>

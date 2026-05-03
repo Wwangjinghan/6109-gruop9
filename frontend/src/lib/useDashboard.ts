@@ -143,6 +143,7 @@ function buildGasSavingsHistory(records: IntentRecord[]): GasSavingsPoint[] {
         gasSavedPct: savedPct,
         gasIndividual: individual,
         gasBatched: batched,
+        ...(realGas != null ? { gasUsedReal: realGas } : {}),
       } satisfies GasSavingsPoint;
     });
 }

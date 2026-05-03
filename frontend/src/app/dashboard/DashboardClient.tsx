@@ -5,6 +5,7 @@ import { MetricsSummary } from "@/components/dashboard/MetricsSummary";
 import { IntentQueuePanel } from "@/components/dashboard/IntentQueuePanel";
 import { GasSavingsChart } from "@/components/dashboard/GasSavingsChart";
 import { ThroughputChart } from "@/components/dashboard/ThroughputChart";
+import { LatencyChart } from "@/components/dashboard/LatencyChart";
 import { useDashboardMetrics, generateDemoRecords } from "@/lib/useDashboard";
 import type { IntentRecord, DashboardMetrics } from "@/lib/dashboardTypes";
 import { Badge } from "@/components/ui/badge";
@@ -204,9 +205,10 @@ export function DashboardClient() {
       <MetricsSummary metrics={metrics} />
 
       {/* Charts row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <GasSavingsChart data={metrics.gasSavingsHistory} />
         <ThroughputChart data={metrics.tpsHistory} />
+        <LatencyChart data={metrics.latencyHistory} avgLatencyMs={metrics.avgLatencyMs} />
       </div>
 
       {/* Intent queue */}

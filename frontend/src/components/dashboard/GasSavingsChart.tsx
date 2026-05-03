@@ -21,6 +21,7 @@ interface TooltipPayload {
 function CustomTooltip({ active, payload }: { active?: boolean; payload?: TooltipPayload[] }) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
+  const isReal = d.gasUsedReal != null;
   return (
     <div className="rounded-lg border bg-popover text-popover-foreground shadow-md p-3 text-xs space-y-1">
       <p className="font-semibold">{d.batchId.startsWith("solo") ? "Solo" : d.batchId}</p>
@@ -29,6 +30,9 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Toolti
       <p>Gas (batched): <span className="font-mono">{d.gasBatched.toLocaleString()}</span></p>
       <p className="text-emerald-600 font-semibold">
         Saved: {d.gasSavedPct.toFixed(1)}%
+      </p>
+      <p className={`text-xs ${isReal ? "text-emerald-600" : "text-muted-foreground/70"}`}>
+        Source: {isReal ? "on-chain receipt" : "estimate"}
       </p>
     </div>
   );

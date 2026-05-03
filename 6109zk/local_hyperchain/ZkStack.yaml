@@ -1,0 +1,9 @@
+name: local_hyperchain
+l1_network: Localhost
+link_to_code: /home/wangh/zksync-era
+chains: /mnt/c/Users/lenovo/Desktop/cc_test/local_hyperchain/chains
+config: /mnt/c/Users/lenovo/Desktop/cc_test/local_hyperchain/./configs/
+default_chain: myappchain
+era_chain_id: 270
+prover_version: NoProofs
+wallet_creation: Localhost

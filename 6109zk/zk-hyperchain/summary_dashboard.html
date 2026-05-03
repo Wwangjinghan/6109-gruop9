@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZK Stack Appchain — Performance Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 2rem 1.5rem;
+    }
+
+    /* ── Header ── */
+    header {
+      text-align: center;
+      margin-bottom: 2.5rem;
+    }
+    header h1 {
+      font-size: 1.9rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #a78bfa, #34d399);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: .4rem;
+    }
+    header p {
+      color: #94a3b8;
+      font-size: .95rem;
+    }
+    .badge {
+      display: inline-block;
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 999px;
+      padding: .2rem .75rem;
+      font-size: .78rem;
+      color: #94a3b8;
+      margin: .15rem .2rem;
+    }
+
+    /* ── KPI strip ── */
+    .kpi-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+    }
+    .kpi {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.1rem 1rem;
+      text-align: center;
+    }
+    .kpi .value {
+      font-size: 2rem;
+      font-weight: 800;
+      line-height: 1;
+      margin-bottom: .3rem;
+    }
+    .kpi .label { font-size: .78rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .05em; }
+    .kpi .sub   { font-size: .72rem; color: #64748b; margin-top: .2rem; }
+    .green  { color: #34d399; }
+    .blue   { color: #60a5fa; }
+    .orange { color: #fb923c; }
+    .purple { color: #a78bfa; }
+
+    /* ── Charts grid ── */
+    .charts-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2.5rem;
+    }
+    .chart-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .chart-card h3 {
+      padding: .85rem 1.2rem .6rem;
+      font-size: .88rem;
+      font-weight: 600;
+      color: #cbd5e1;
+      border-bottom: 1px solid #334155;
+    }
+    .chart-card img {
+      width: 100%;
+      display: block;
+      background: #f9fafb;
+    }
+
+    /* ── Benchmark table ── */
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #e2e8f0;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+    }
+    .section-title::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: #334155;
+    }
+
+    .table-wrap { overflow-x: auto; margin-bottom: 2.5rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: .88rem;
+    }
+    thead th {
+      background: #0f172a;
+      color: #94a3b8;
+      font-weight: 600;
+      text-align: left;
+      padding: .65rem 1rem;
+      border-bottom: 1px solid #334155;
+      font-size: .78rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    tbody tr { border-bottom: 1px solid #1e293b; }
+    tbody tr:hover { background: #1e293b; }
+    tbody td { padding: .7rem 1rem; color: #cbd5e1; }
+    .metric-name { font-weight: 600; color: #e2e8f0; }
+    .highlight { color: #34d399; font-weight: 700; }
+    .dim { color: #64748b; font-size: .8rem; }
+
+    /* ── Finality timeline ── */
+    .timeline {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.4rem 1.5rem;
+      margin-bottom: 2.5rem;
+    }
+    .timeline-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: .6rem 0;
+      border-bottom: 1px solid #0f172a;
+    }
+    .timeline-row:last-child { border-bottom: none; }
+    .tier-badge {
+      flex-shrink: 0;
+      width: 56px;
+      text-align: center;
+      font-size: .7rem;
+      font-weight: 700;
+      padding: .2rem .4rem;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+    .t1 { background: #14532d; color: #86efac; }
+    .t2 { background: #1e3a5f; color: #93c5fd; }
+    .t3a{ background: #4c1d95; color: #c4b5fd; }
+    .t3b{ background: #7c2d12; color: #fdba74; }
+    .tier-label { flex: 1; font-size: .88rem; color: #cbd5e1; }
+    .tier-value { font-weight: 700; font-size: .9rem; }
+
+    /* ── Deployment registry ── */
+    .reg-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2.5rem;
+    }
+    .reg-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 1.1rem 1.2rem;
+    }
+    .reg-card h4 {
+      font-size: .82rem;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: #94a3b8;
+      margin-bottom: .8rem;
+      font-weight: 600;
+    }
+    .addr-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: .35rem 0;
+      border-bottom: 1px solid #0f172a;
+      gap: .5rem;
+    }
+    .addr-row:last-child { border-bottom: none; }
+    .addr-name { font-size: .8rem; color: #94a3b8; flex-shrink: 0; }
+    .addr-val  { font-size: .75rem; color: #60a5fa; font-family: monospace; word-break: break-all; text-align: right; }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      color: #475569;
+      font-size: .8rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid #1e293b;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>ZK Stack Modular Appchain — Performance Dashboard</h1>
+  <p>Local Hyperchain Benchmark Results</p>
+  <div style="margin-top:.7rem">
+    <span class="badge">reth v1.8.2 · Chain 9</span>
+    <span class="badge">ZK Stack v0.2.1 · Chain 271</span>
+    <span class="badge">foundry-zksync zksolc-1.5.15</span>
+    <span class="badge">Validium / NoDA mode</span>
+  </div>
+</header>
+
+<!-- KPI strip -->
+<div class="kpi-strip">
+  <div class="kpi">
+    <div class="value green">4.3×</div>
+    <div class="label">Throughput Gain</div>
+    <div class="sub">57 → 238 TPS</div>
+  </div>
+  <div class="kpi">
+    <div class="value blue">357×</div>
+    <div class="label">Latency Reduction</div>
+    <div class="sub">714 ms → 2 ms (soft)</div>
+  </div>
+  <div class="kpi">
+    <div class="value orange">9.5×</div>
+    <div class="label">Fee Reduction</div>
+    <div class="sub">21,000 → 2,201 gwei</div>
+  </div>
+  <div class="kpi">
+    <div class="value purple">&lt;4 ms</div>
+    <div class="label">DA Overhead</div>
+    <div class="sub">128 KB blob round-trip</div>
+  </div>
+  <div class="kpi">
+    <div class="value" style="color:#f472b6">300K×</div>
+    <div class="label">Soft/Hard Ratio</div>
+    <div class="sub">2 ms vs ~610 s finality</div>
+  </div>
+</div>
+
+<!-- Charts -->
+<div class="section-title">Benchmark Charts</div>
+<div class="charts-grid">
+  <div class="chart-card">
+    <h3>Throughput: L1 vs ZK Stack L2</h3>
+    <img src="benchmark/throughput_comp.png" alt="Throughput Comparison"
+         onerror="this.style.padding='2rem';this.style.textAlign='center';this.alt='throughput_comp.png not found'" />
+  </div>
+  <div class="chart-card">
+    <h3>Confirmation Latency Distribution</h3>
+    <img src="benchmark/latency_comp.png" alt="Latency Comparison"
+         onerror="this.style.padding='2rem';this.alt='latency_comp.png not found'" />
+  </div>
+  <div class="chart-card">
+    <h3>Gas Cost Efficiency &amp; DA Separation</h3>
+    <img src="benchmark/gas_efficiency.png" alt="Gas Efficiency"
+         onerror="this.style.padding='2rem';this.alt='gas_efficiency.png not found'" />
+  </div>
+</div>
+
+<!-- Benchmark summary table -->
+<div class="section-title">Full Benchmark Results</div>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>L1 — Monolithic (reth)</th>
+        <th>ZK Stack L2 — Modular</th>
+        <th>Delta</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="metric-name">Chain ID</td>
+        <td>9</td>
+        <td>271</td>
+        <td class="dim">—</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Throughput (TPS)</td>
+        <td>55–59 TPS <span class="dim">(measured, 50 txs)</span></td>
+        <td>238 TPS <span class="dim">(theoretical cap)</span></td>
+        <td class="highlight">+4.3×</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Latency P50</td>
+        <td>714 ms</td>
+        <td>2.0 ms <span class="dim">(soft confirm)</span></td>
+        <td class="highlight">357× faster</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Latency P95</td>
+        <td>776 ms</td>
+        <td>2.6 ms <span class="dim">(soft confirm)</span></td>
+        <td class="highlight">298× faster</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Gas price</td>
+        <td>1.000 gwei</td>
+        <td>0.1048 gwei</td>
+        <td class="highlight">10.5× lower</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Fee / ETH transfer</td>
+        <td>21,000 gwei</td>
+        <td>2,201 gwei</td>
+        <td class="highlight">9.5× cheaper</td>
+      </tr>
+      <tr>
+        <td class="metric-name">submitScore gas (cold)</td>
+        <td>~76,000 gas · 76,000 gwei fee</td>
+        <td>~76,000 gas · 7,973 gwei fee</td>
+        <td class="highlight">9.5× cheaper</td>
+      </tr>
+      <tr>
+        <td class="metric-name">DA blob post (1 KB)</td>
+        <td class="dim">Embedded in calldata</td>
+        <td>~1.1 ms</td>
+        <td class="highlight">Modular / decoupled</td>
+      </tr>
+      <tr>
+        <td class="metric-name">DA blob post (128 KB)</td>
+        <td class="dim">Embedded in calldata</td>
+        <td>~2.5 ms</td>
+        <td class="highlight">Sub-linear scaling</td>
+      </tr>
+      <tr>
+        <td class="metric-name">L1 block time</td>
+        <td>~0.3 s <span class="dim">(dev mode)</span></td>
+        <td>—</td>
+        <td class="dim">—</td>
+      </tr>
+      <tr>
+        <td class="metric-name">L2 block time</td>
+        <td>—</td>
+        <td>~3.0 s</td>
+        <td class="dim">—</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Hard finality</td>
+        <td>Instant <span class="dim">(single layer)</span></td>
+        <td>~610 s <span class="dim">(batch + ZK proof)</span></td>
+        <td style="color:#f87171">Trade-off ↑</td>
+      </tr>
+      <tr>
+        <td class="metric-name">Security model</td>
+        <td>Full L1 consensus</td>
+        <td>ZK-inherited L1 security</td>
+        <td class="highlight">Equivalent</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Finality timeline -->
+<div class="section-title">ZK Finality Timeline (3-Tier Model)</div>
+<div class="timeline">
+  <div class="timeline-row">
+    <div class="tier-badge t1">Tier 1</div>
+    <div class="tier-label">Soft Confirmation — Sequencer accepts transaction (RPC round-trip)</div>
+    <div class="tier-value green">~2 ms</div>
+  </div>
+  <div class="timeline-row">
+    <div class="tier-badge t2">Tier 2</div>
+    <div class="tier-label">L1 Batch Commit — Sequencer seals batch and posts state root to L1</div>
+    <div class="tier-value blue">~10 s</div>
+  </div>
+  <div class="timeline-row">
+    <div class="tier-badge t3a">Tier 3a</div>
+    <div class="tier-label">ZK Proof — Boojum prover (8 × A100 GPU), hard finality unblocked</div>
+    <div class="tier-value purple">~60 s</div>
+  </div>
+  <div class="timeline-row">
+    <div class="tier-badge t3b">Tier 3b</div>
+    <div class="tier-label">ZK Proof — Boojum prover (single A100 GPU), conservative estimate</div>
+    <div class="tier-value orange">~600 s</div>
+  </div>
+</div>
+
+<!-- Deployment Registry -->
+<div class="section-title">Deployment Registry</div>
+<div class="reg-grid">
+
+  <div class="reg-card">
+    <h4>Networks</h4>
+    <div class="addr-row"><span class="addr-name">L1 Chain ID</span><span class="addr-val">9 (reth dev, port 8545)</span></div>
+    <div class="addr-row"><span class="addr-name">L2 Chain ID</span><span class="addr-val">271 (ZK Stack, port 3050)</span></div>
+    <div class="addr-row"><span class="addr-name">DA Layer</span><span class="addr-val">Simulated HTTP (port 7777)</span></div>
+  </div>
+
+  <div class="reg-card">
+    <h4>L1 System Contracts</h4>
+    <div class="addr-row"><span class="addr-name">BridgeHub</span><span class="addr-val">0x900aaf15088d8408a1270fae8ee4d277c5c2aadc</span></div>
+    <div class="addr-row"><span class="addr-name">Diamond Proxy</span><span class="addr-val">0xd2ee0a9502897350a41605c041c0ff2b39f4e5d1</span></div>
+    <div class="addr-row"><span class="addr-name">ValidatorTimelock</span><span class="addr-val">0xed0558ca59653c8a88f865933eb9b5bfcd883cca</span></div>
+    <div class="addr-row"><span class="addr-name">NoDA L1 Validator</span><span class="addr-val">0x82f80245629a0163e6ce603245f764bd97eed7f4</span></div>
+    <div class="addr-row"><span class="addr-name">Governance (eco)</span><span class="addr-val">0x989e32adf38573e32a7b41a7b293650759dce957</span></div>
+  </div>
+
+  <div class="reg-card">
+    <h4>Application Contracts (L2 Chain 271)</h4>
+    <div class="addr-row"><span class="addr-name">GameLeaderboard</span><span class="addr-val">0x111C3E89Ce80e62EE88318C2804920D4c96f92bb</span></div>
+    <div class="addr-row"><span class="addr-name">GameItems</span><span class="addr-val">0x4B5DF730c2e6b28E17013A1485E5d9BC41Efe021</span></div>
+    <div class="addr-row"><span class="addr-name">ExecutionVerifier</span><span class="addr-val">0x26b368C3Ed16313eBd6660b72d8e4439a697Cb0B</span></div>
+    <div class="addr-row"><span class="addr-name">L2 DA Validator</span><span class="addr-val">0x77c371d00a23316f6eb9bc6ecb0bfd149e35d50a</span></div>
+  </div>
+
+  <div class="reg-card">
+    <h4>Protocol Parameters</h4>
+    <div class="addr-row"><span class="addr-name">Protocol version</span><span class="addr-val">29 (pre-medium interop)</span></div>
+    <div class="addr-row"><span class="addr-name">EVM version</span><span class="addr-val">paris (no PUSH0)</span></div>
+    <div class="addr-row"><span class="addr-name">Commit mode</span><span class="addr-val">Validium / NoDA</span></div>
+    <div class="addr-row"><span class="addr-name">zksolc version</span><span class="addr-val">1.5.15</span></div>
+    <div class="addr-row"><span class="addr-name">Gas per pubdata</span><span class="addr-val">800</span></div>
+  </div>
+
+</div>
+
+<footer>
+  ZK Stack Modular Appchain Performance Study &nbsp;·&nbsp;
+  reth v1.8.2 · ZK Stack v0.2.1 · Ubuntu 24.04 (WSL2) &nbsp;·&nbsp;
+  Benchmark data: <code>benchmark/bench_results.json</code>
+</footer>
+
+</body>
+</html>

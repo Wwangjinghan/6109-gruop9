@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { ZodError } from "zod";
 import { IntentSchema } from "../types/intent.js";
 import type { IntentBatcher } from "../batcher/IntentBatcher.js";
+import type { DcaScheduler } from "../scheduler/DcaScheduler.js";
 import { logger } from "../utils/logger.js";
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
@@ -21,7 +22,7 @@ function zodErrorHandler(
 
 // ─── Router factory ───────────────────────────────────────────────────────────
 
-export function createRouter(batcher: IntentBatcher): Router {
+export function createRouter(batcher: IntentBatcher, scheduler?: DcaScheduler): Router {
   const router = Router();
 
   /**
@@ -58,6 +59,12 @@ export function createRouter(batcher: IntentBatcher): Router {
     if (!record) {
       return res.status(404).json({ error: "Intent not found" });
     }
+    const latencyMs =
+      record.executedAt != null && record.submittedAt != null
+        ? record.executedAt - record.submittedAt
+        : record.submittedAt != null
+          ? Date.now() - record.submittedAt
+          : undefined;
     return res.json({
       intentId: record.id,
       action: record.payload.action,
@@ -68,8 +75,143 @@ export function createRouter(batcher: IntentBatcher): Router {
       txHash: record.txHash,
       error: record.error,
       receivedAt: record.receivedAt,
+      submittedAt: record.submittedAt,
+      executedAt: record.executedAt,
+      latencyMs,
+      // gasUsed serialised as string to avoid JSON bigint overflow
+      gasUsed: record.gasUsed != null ? record.gasUsed.toString() : undefined,
     });
   });
+
+  /**
+   * GET /metrics
+   * Aggregate throughput, latency, and failure-rate metrics across all tracked intents.
+   */
+  router.get("/metrics", (_req, res) => {
+    const all = batcher.getAllRecords();
+    const total = all.length;
+    const executed = all.filter((r) => r.status === "executed");
+    const failed = all.filter((r) => r.status === "failed");
+
+    // Latency: only intents that have both submittedAt and executedAt
+    const withLatency = executed.filter(
+      (r): r is typeof r & { submittedAt: number; executedAt: number } =>
+        r.submittedAt != null && r.executedAt != null,
+    );
+    const avgLatencyMs =
+      withLatency.length > 0
+        ? Math.round(
+            withLatency.reduce((s, r) => s + (r.executedAt - r.submittedAt), 0) /
+              withLatency.length,
+          )
+        : null;
+    const maxLatencyMs =
+      withLatency.length > 0
+        ? Math.max(...withLatency.map((r) => r.executedAt - r.submittedAt))
+        : null;
+
+    // Gas: intents that have real gasUsed from the receipt
+    const withGas = executed.filter(
+      (r): r is typeof r & { gasUsed: bigint } => r.gasUsed != null,
+    );
+    // gasUsed is per-batch (shared by all intents in that batch); deduplicate by batchId
+    const batchGasMap = new Map<string, bigint>();
+    for (const r of withGas) {
+      if (r.batchId && !batchGasMap.has(r.batchId)) {
+        batchGasMap.set(r.batchId, r.gasUsed);
+      }
+    }
+    const avgGasPerBatch =
+      batchGasMap.size > 0
+        ? Number(
+            [...batchGasMap.values()].reduce((s, g) => s + g, 0n) /
+              BigInt(batchGasMap.size),
+          )
+        : null;
+
+    // TPS: bucket receivedAt into 10-second windows, take the peak window
+    const WINDOW_MS = 10_000;
+    const tpsBuckets = new Map<number, number>();
+    for (const r of all) {
+      const bucket = Math.floor(r.receivedAt / WINDOW_MS) * WINDOW_MS;
+      tpsBuckets.set(bucket, (tpsBuckets.get(bucket) ?? 0) + 1);
+    }
+    const peakTps =
+      tpsBuckets.size > 0
+        ? parseFloat(
+            (Math.max(...tpsBuckets.values()) / (WINDOW_MS / 1000)).toFixed(3),
+          )
+        : 0;
+
+    return res.json({
+      total,
+      executedCount: executed.length,
+      failedCount: failed.length,
+      failedRatePct:
+        total > 0 ? parseFloat(((failed.length / total) * 100).toFixed(1)) : 0,
+      avgLatencyMs,
+      maxLatencyMs,
+      peakTps,
+      // Gas metrics — null when no on-chain receipts received yet
+      avgGasPerBatch,
+      gasDataPoints: batchGasMap.size,
+    });
+  });
+
+  // ── DCA Schedule endpoints (only wired when scheduler is provided) ────────────
+
+  if (scheduler) {
+    /**
+     * POST /schedules/dca
+     * Register a time-interval DCA plan. Body must be a DCA IntentPayload.
+     * Returns { scheduleId, nextFireAt, remainingIntervals } immediately.
+     */
+    router.post("/schedules/dca", (req: Request, res: Response) => {
+      const parsed = IntentSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
+      }
+      if (parsed.data.action !== "DCA") {
+        return res.status(400).json({ error: "Only DCA intents can be scheduled" });
+      }
+      const schedule = scheduler.register(parsed.data as Extract<typeof parsed.data, { action: "DCA" }>);
+      logger.info({ scheduleId: schedule.id, userId: parsed.data.userId }, "DCA schedule created via API");
+      return res.status(201).json({
+        scheduleId: schedule.id,
+        remainingIntervals: schedule.remainingIntervals,
+        nextFireAt: schedule.nextFireAt,
+        intervalSeconds: schedule.params.intervalSeconds,
+      });
+    });
+
+    /**
+     * GET /schedules/dca
+     * List all DCA schedules (active and completed).
+     */
+    router.get("/schedules/dca", (_req, res) => {
+      return res.json(scheduler.getAllSchedules());
+    });
+
+    /**
+     * GET /schedules/dca/:id
+     * Get a specific DCA schedule by ID.
+     */
+    router.get("/schedules/dca/:id", (req: Request, res: Response) => {
+      const s = scheduler.getSchedule(req.params.id);
+      if (!s) return res.status(404).json({ error: "Schedule not found" });
+      return res.json(s);
+    });
+
+    /**
+     * DELETE /schedules/dca/:id
+     * Cancel an active DCA schedule.
+     */
+    router.delete("/schedules/dca/:id", (req: Request, res: Response) => {
+      const ok = scheduler.cancelSchedule(req.params.id);
+      if (!ok) return res.status(404).json({ error: "Schedule not found" });
+      return res.json({ cancelled: true });
+    });
+  }
 
   /**
    * GET /health

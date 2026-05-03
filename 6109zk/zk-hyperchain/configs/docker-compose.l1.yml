@@ -1,0 +1,53 @@
+# Local L1 — Geth (go-ethereum) in --dev mode
+services:
+  geth:
+    image: "ethereum/client-go:v1.13.14"
+    container_name: "zk-local-geth"
+    restart: unless-stopped
+    ports:
+      - "8545:8545"
+      - "8546:8546"
+    command:
+      - "--dev"
+      - "--dev.period=1"
+      - "--http"
+      - "--http.addr=0.0.0.0"
+      - "--http.port=8545"
+      - "--http.api=eth,net,web3,debug,txpool,personal"
+      - "--http.corsdomain=*"
+      - "--http.vhosts=*"
+      - "--ws"
+      - "--ws.addr=0.0.0.0"
+      - "--ws.port=8546"
+      - "--ws.api=eth,net,web3,debug,txpool,personal"
+      - "--ws.origins=*"
+      - "--verbosity=3"
+      - "--gcmode=archive"
+    volumes:
+      - geth_data:/root/.ethereum
+    healthcheck:
+      test: ["CMD", "sh", "-c",
+        "wget -qO- --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' http://localhost:8545 | grep -q result"]
+      interval: 5s
+      retries: 10
+
+  postgres:
+    image: "postgres:14-alpine"
+    container_name: "zk-postgres"
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zksync
+      POSTGRES_PASSWORD: zksync
+      POSTGRES_DB: zksync_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zksync"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  geth_data:
+  pg_data:

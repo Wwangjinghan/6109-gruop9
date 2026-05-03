@@ -5,6 +5,7 @@ import { createChainClients } from "./chain/viemClients.js";
 import { IntentBatcher } from "./batcher/IntentBatcher.js";
 import { BundlerSubmitter } from "./submitter/BundlerSubmitter.js";
 import { createRouter } from "./api/routes.js";
+import { DcaScheduler } from "./scheduler/DcaScheduler.js";
 import { logger } from "./utils/logger.js";
 import { ENTRY_POINT_ADDRESS } from "./abi/entryPoint.js";
 
@@ -17,8 +18,9 @@ const PRIVATE_KEY         = (process.env.RELAYER_PRIVATE_KEY   ?? "") as Hex;
 const ACCOUNT_ADDRESS     = (process.env.ACCOUNT_ADDRESS       ?? "") as Address;
 const SWAP_ROUTER_ADDRESS = (process.env.SWAP_ROUTER_ADDRESS   ?? "") as Address;
 const ENTRY_POINT         = (process.env.ENTRY_POINT_ADDRESS   ?? ENTRY_POINT_ADDRESS) as Address;
-const BATCH_SIZE          = Number(process.env.BATCH_SIZE      ?? 10);
-const BATCH_WINDOW_MS     = Number(process.env.BATCH_WINDOW_MS ?? 5000);
+const BATCH_SIZE          = Number(process.env.BATCH_SIZE        ?? 10);
+const BATCH_WINDOW_MS     = Number(process.env.BATCH_WINDOW_MS   ?? 5000);
+const MAX_CONCURRENT      = Number(process.env.MAX_CONCURRENT    ?? 3);
 
 const missing = [
   !RPC_URL             && "RPC_URL",
@@ -47,6 +49,7 @@ const submitter = new BundlerSubmitter({
   walletClient,
   agentAddress,
   entryPointAddress: ENTRY_POINT,
+  maxConcurrent: MAX_CONCURRENT,
 });
 
 const batcher = new IntentBatcher({
@@ -57,9 +60,11 @@ const batcher = new IntentBatcher({
   onBatchReady:   (batch) => submitter.submitBatch(batch).then(() => {}),
 });
 
+const scheduler = new DcaScheduler(batcher);
+
 const app = express();
 app.use(express.json());
-app.use("/", createRouter(batcher));
+app.use("/", createRouter(batcher, scheduler));
 
 const server = app.listen(PORT, () => {
   logger.info(
@@ -72,6 +77,7 @@ const server = app.listen(PORT, () => {
 
 const shutdown = () => {
   logger.info("Shutting down…");
+  scheduler.stop();
   batcher.stop();
   server.close(() => process.exit(0));
 };

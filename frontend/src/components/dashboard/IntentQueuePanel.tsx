@@ -75,7 +75,15 @@ export function IntentQueuePanel({ records, isLive = false }: Props) {
                         batch: {truncate(r.batchId, 4)}
                       </span>
                     )}
+                    {r.latencyMs != null && r.status === "executed" && (
+                      <span className="ml-2 text-emerald-600/80">{r.latencyMs} ms</span>
+                    )}
                   </div>
+                  {r.status === "failed" && r.error && (
+                    <div className="text-xs text-destructive/80 truncate max-w-[260px]" title={r.error}>
+                      {r.error}
+                    </div>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0 ml-4">
                   <Badge variant={STATUS_VARIANT[r.status]} className="text-xs">

@@ -9,10 +9,14 @@ contract IntentRegistryTest is Test {
     IntentRegistry registry;
     uint256 signerPk = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
     address signer;
+    address bundler = address(0xB0BED);
+    address stranger = address(0xDEAD);
 
     function setUp() public {
         registry = new IntentRegistry();
         signer = vm.addr(signerPk);
+        // Whitelist the bundler address
+        registry.setBundler(bundler, true);
     }
 
     function _makeIntent(uint256 deadline, uint256 nonce) internal view returns (Intent memory) {
@@ -59,6 +63,32 @@ contract IntentRegistryTest is Test {
 
         vm.expectRevert(IntentRegistry.IntentAlreadyRegistered.selector);
         registry.registerIntent(intent, sig);
+    }
+
+    function test_MarkExecuted_ByTrustedBundler() public {
+        Intent memory intent = _makeIntent(block.timestamp + 1 hours, 2);
+        bytes memory sig = _signIntent(intent);
+        bytes32 id = registry.registerIntent(intent, sig);
+
+        vm.prank(bundler);
+        registry.markExecuted(id);
+        assertEq(uint8(registry.intentStatus(id)), uint8(IntentStatus.Executed));
+    }
+
+    function test_MarkExecuted_RevertsForStranger() public {
+        Intent memory intent = _makeIntent(block.timestamp + 1 hours, 3);
+        bytes memory sig = _signIntent(intent);
+        bytes32 id = registry.registerIntent(intent, sig);
+
+        vm.prank(stranger);
+        vm.expectRevert(IntentRegistry.Unauthorized.selector);
+        registry.markExecuted(id);
+    }
+
+    function test_SetBundler_RevertsForNonOwner() public {
+        vm.prank(stranger);
+        vm.expectRevert(IntentRegistry.Unauthorized.selector);
+        registry.setBundler(stranger, true);
     }
 
     function test_CancelIntent() public {

@@ -1,0 +1,50 @@
+# ZK Chain Configuration
+# This file defines your Appchain (L2) settings
+
+chain:
+  name: "myappchain"
+  chain_id: 271           # L2 chain ID (pick any unique value)
+
+  # Prover configuration
+  prover_type: "no_proofs"   # local dev: skip real ZK proofs
+
+  # Base token (ETH on L1)
+  base_token:
+    address: "0x0000000000000000000000000000000000000001"  # native ETH sentinel
+    nominator: 1
+    denominator: 1
+
+  # DA (Data Availability) configuration — Modular DA section
+  # Modes: "rollup" | "validium"
+  #   rollup   → calldata posted to L1 (Ethereum)
+  #   validium → data sent to external DA layer (Avail / Celestia / custom)
+  da_mode: "validium"
+
+  # Validium / Modular DA provider
+  da_layer:
+    provider: "simulated"        # Options: simulated | avail | celestia | eigen
+    # For Avail testnet, replace with:
+    #   provider: "avail"
+    #   endpoint: "wss://turing-rpc.avail.so/ws"
+    #   app_id: 1
+    # For Celestia testnet, replace with:
+    #   provider: "celestia"
+    #   endpoint: "http://127.0.0.1:26659"
+    #   namespace: "000000000000000000000000000000000000000001"
+
+  # Fee and gas params
+  fee_account: "0x36615Cf349d7F6344891B1e7CA7C72883F5dc049"
+
+  # Genesis settings
+  genesis:
+    protocol_version: "0.24.0"
+    genesis_root: ""          # filled in by zkstack chain create
+    rollup_last_leaf_index: 26
+    genesis_commitment: ""
+    bootloader_hash: ""
+    default_aa_hash: ""
+
+  # RPC endpoints (after stack is started)
+  rpc:
+    http_port: 3050
+    ws_port: 3051

@@ -38,12 +38,19 @@ export function MetricsSummary({ metrics }: Props) {
   const {
     totalIntents,
     pendingCount,
-    batchedCount,
     executedCount,
     failedCount,
+    failedRatePct,
     avgBatchSize,
     totalGasSavedPct,
+    avgLatencyMs,
+    maxLatencyMs,
   } = metrics;
+
+  const latencyLabel =
+    avgLatencyMs != null ? `${avgLatencyMs} ms` : "—";
+  const latencySub =
+    maxLatencyMs != null ? `max ${maxLatencyMs} ms` : "no data yet";
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -60,27 +67,32 @@ export function MetricsSummary({ metrics }: Props) {
         accent={pendingCount > 0 ? "yellow" : "default"}
       />
       <StatCard
-        label="Batched"
-        value={batchedCount}
-        sub="awaiting execution"
-        accent="yellow"
-      />
-      <StatCard
         label="Completed"
         value={executedCount}
         sub="on-chain"
         accent="green"
       />
       <StatCard
-        label="Avg Batch Size"
-        value={avgBatchSize > 0 ? `${avgBatchSize}x` : "—"}
-        sub="intents per batch"
-        accent="blue"
+        label="Failed"
+        value={failedCount > 0 ? `${failedCount} (${failedRatePct}%)` : "0"}
+        sub={failedRatePct > 5 ? "high failure rate" : "failure rate"}
+        accent={failedRatePct > 10 ? "red" : failedRatePct > 0 ? "yellow" : "default"}
+      />
+      <StatCard
+        label="Avg Latency"
+        value={latencyLabel}
+        sub={latencySub}
+        accent={
+          avgLatencyMs == null ? "default"
+          : avgLatencyMs < 2000 ? "green"
+          : avgLatencyMs < 5000 ? "yellow"
+          : "red"
+        }
       />
       <StatCard
         label="Gas Saved"
         value={totalGasSavedPct > 0 ? `${totalGasSavedPct}%` : "—"}
-        sub="vs individual txns"
+        sub={`avg batch ${avgBatchSize > 0 ? `${avgBatchSize}x` : "—"}`}
         accent={totalGasSavedPct >= 30 ? "green" : totalGasSavedPct > 0 ? "yellow" : "default"}
       />
     </div>

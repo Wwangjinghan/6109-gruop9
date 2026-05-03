@@ -1,0 +1,25 @@
+# ZK Stack Ecosystem Configuration
+# Local Hyperchain with Modular DA
+# Generated for local development
+
+name: "local-hyperchain"
+l1_network: "localhost"
+
+# Local L1 (Geth) Settings
+l1_rpc_url: "http://127.0.0.1:8545"
+l1_chain_id: 9
+
+# Ecosystem-wide deployed contracts (populated after init)
+contracts:
+  # Populated by: zkstack ecosystem init
+  bridgehub_proxy_addr: ""
+  state_transition_proxy_addr: ""
+  transparent_proxy_admin: ""
+  diamond_cut_data: ""
+
+# Default wallet used for deployments (rich account on local Geth)
+deployer_pk: "0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110"
+governor_pk:  "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+# ZK Stack proof system
+proof_type: "no_proofs"    # use "fflonk" or "plonk" for production

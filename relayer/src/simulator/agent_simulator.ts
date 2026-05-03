@@ -38,7 +38,7 @@ import { sepolia, mainnet } from "viem/chains";
 import { logger } from "../utils/logger.js";
 import { CoinGeckoPriceFeed, MockPriceFeed, type PriceFeed } from "./priceFeed.js";
 import { ConditionEvaluator, type PriceRule } from "./conditions.js";
-import { buildSignedDcaIntent } from "./intentSigner.js";
+import { buildSignedDcaIntent, buildSignedRebalanceIntent } from "./intentSigner.js";
 import { RelayerClient } from "./relayerClient.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -99,9 +99,27 @@ const rule: PriceRule = (() => {
 const evaluator  = new ConditionEvaluator(rule);
 const relayer    = new RelayerClient({ baseUrl: RELAYER_URL });
 
+// ─── Rebalance config (optional — simulator fires a REBALANCE when price rises sharply) ──
+// Set SIMULATOR_REBALANCE_TOKENS as comma-separated addresses to enable.
+// e.g. SIMULATOR_REBALANCE_TOKENS=0xA0b8...,0xC02a...
+// SIMULATOR_REBALANCE_WEIGHTS=6000,4000  (basis points, must sum to 10000)
+const REBALANCE_TOKENS_RAW = process.env.SIMULATOR_REBALANCE_TOKENS;
+const REBALANCE_WEIGHTS_RAW = process.env.SIMULATOR_REBALANCE_WEIGHTS;
+const REBALANCE_ENABLED = !!REBALANCE_TOKENS_RAW && !!REBALANCE_WEIGHTS_RAW;
+const REBALANCE_TOKENS = REBALANCE_TOKENS_RAW
+  ? (REBALANCE_TOKENS_RAW.split(",").map((s) => s.trim()) as `0x${string}`[])
+  : [];
+const REBALANCE_WEIGHTS = REBALANCE_WEIGHTS_RAW
+  ? REBALANCE_WEIGHTS_RAW.split(",").map(Number)
+  : [];
+const REBALANCE_TOLERANCE_BPS = Number(optionalEnv("SIMULATOR_REBALANCE_TOLERANCE_BPS", "50"));
+// Trigger rebalance when price rises by this percent (default 5%)
+const REBALANCE_TRIGGER_PERCENT = Number(optionalEnv("SIMULATOR_REBALANCE_TRIGGER_PERCENT", "5"));
+
 // ─── Monitor loop ─────────────────────────────────────────────────────────────
 
 let lastTriggerAt = 0;
+let lastRebalanceTriggerAt = 0;
 let nonce = 0;
 let running = true;
 
@@ -115,69 +133,105 @@ async function tick(): Promise<void> {
   }
 
   const result = evaluator.evaluate(point);
-
   logger.info(
     { asset: ASSET, priceUsd: point.priceUsd, triggered: result.triggered, reason: result.reason },
     "Price tick",
   );
 
-  if (!result.triggered) return;
-
-  const now = Date.now();
-  const cooldownRemaining = COOLDOWN_MS - (now - lastTriggerAt);
-  if (lastTriggerAt > 0 && cooldownRemaining > 0) {
-    logger.info({ cooldownRemaining }, "Condition met but still in cooldown — skipping");
-    return;
+  // ── DCA trigger ──────────────────────────────────────────────────────────────
+  if (result.triggered) {
+    const cooldownRemaining = COOLDOWN_MS - (Date.now() - lastTriggerAt);
+    if (lastTriggerAt > 0 && cooldownRemaining > 0) {
+      logger.info({ cooldownRemaining }, "DCA condition met but still in cooldown — skipping");
+    } else {
+      logger.info({ priceUsd: point.priceUsd, rule: result.rule }, "Condition triggered — building DCA intent");
+      let payload;
+      try {
+        payload = await buildSignedDcaIntent(
+          {
+            userId: USER_ID,
+            tokenIn: TOKEN_IN,
+            tokenOut: TOKEN_OUT,
+            amountPerInterval: AMOUNT_PER_INTERVAL,
+            intervalSeconds: INTERVAL_SECONDS,
+            totalIntervals: TOTAL_INTERVALS,
+            nonce: nonce++,
+          },
+          walletClient,
+        );
+      } catch (err) {
+        logger.error({ err }, "Failed to build signed DCA intent");
+        payload = null;
+      }
+      if (payload) {
+        try {
+          const submitResponse = await relayer.submit(payload);
+          lastTriggerAt = Date.now();
+          logger.info(
+            { intentId: submitResponse.intentId, status: submitResponse.status, priceUsd: point.priceUsd },
+            "DCA intent submitted",
+          );
+          relayer
+            .pollUntilDone(submitResponse.intentId, { intervalMs: 5_000, timeoutMs: 300_000 })
+            .then((s) =>
+              logger.info({ intentId: s.intentId, status: s.status, txHash: s.txHash }, "Intent reached terminal status"),
+            )
+            .catch((err) =>
+              logger.warn({ err, intentId: submitResponse.intentId }, "Status polling timed out or errored"),
+            );
+        } catch (err) {
+          logger.error({ err }, "Failed to submit DCA intent to relayer");
+        }
+      }
+    }
   }
 
-  logger.info({ priceUsd: point.priceUsd, rule: result.rule }, "Condition triggered — building DCA intent");
+  // ── Rebalance trigger (independent of DCA condition) ─────────────────────────
+  if (!REBALANCE_ENABLED) return;
 
-  let payload;
+  const rebalanceRule: PriceRule = { type: "PERCENT_RISE", asset: ASSET, percent: REBALANCE_TRIGGER_PERCENT };
+  const rebalanceEvaluator = new ConditionEvaluator(rebalanceRule);
+  const rebalanceResult = rebalanceEvaluator.evaluate(point);
+  if (!rebalanceResult.triggered) return;
+
+  const rebalanceCooldown = COOLDOWN_MS - (Date.now() - lastRebalanceTriggerAt);
+  if (lastRebalanceTriggerAt > 0 && rebalanceCooldown > 0) return;
+
+  logger.info({ priceUsd: point.priceUsd }, "Price spike — triggering portfolio rebalance");
+
+  let rebalancePayload;
   try {
-    payload = await buildSignedDcaIntent(
+    rebalancePayload = await buildSignedRebalanceIntent(
       {
         userId: USER_ID,
-        tokenIn: TOKEN_IN,
-        tokenOut: TOKEN_OUT,
-        amountPerInterval: AMOUNT_PER_INTERVAL,
-        intervalSeconds: INTERVAL_SECONDS,
-        totalIntervals: TOTAL_INTERVALS,
+        tokens: REBALANCE_TOKENS,
+        targetWeightsBps: REBALANCE_WEIGHTS,
+        toleranceBps: REBALANCE_TOLERANCE_BPS,
         nonce: nonce++,
       },
       walletClient,
     );
   } catch (err) {
-    logger.error({ err }, "Failed to build signed intent");
+    logger.error({ err }, "Failed to build signed rebalance intent");
     return;
   }
 
-  let submitResponse;
   try {
-    submitResponse = await relayer.submit(payload);
+    const rebalanceResponse = await relayer.submit(rebalancePayload);
+    lastRebalanceTriggerAt = Date.now();
+    logger.info(
+      { intentId: rebalanceResponse.intentId, priceUsd: point.priceUsd },
+      "Rebalance intent submitted",
+    );
+    relayer
+      .pollUntilDone(rebalanceResponse.intentId, { intervalMs: 5_000, timeoutMs: 300_000 })
+      .then((s) =>
+        logger.info({ intentId: s.intentId, status: s.status }, "Rebalance reached terminal status"),
+      )
+      .catch((err) => logger.warn({ err }, "Rebalance polling timed out"));
   } catch (err) {
-    logger.error({ err }, "Failed to submit intent to relayer");
-    return;
+    logger.error({ err }, "Failed to submit rebalance intent");
   }
-
-  lastTriggerAt = Date.now();
-
-  logger.info(
-    { intentId: submitResponse.intentId, status: submitResponse.status, priceUsd: point.priceUsd },
-    "DCA intent submitted",
-  );
-
-  // Fire-and-forget status poll in the background — logs final outcome without blocking the loop
-  relayer
-    .pollUntilDone(submitResponse.intentId, { intervalMs: 5_000, timeoutMs: 300_000 })
-    .then((s) => {
-      logger.info(
-        { intentId: s.intentId, status: s.status, txHash: s.txHash },
-        "Intent reached terminal status",
-      );
-    })
-    .catch((err) => {
-      logger.warn({ err, intentId: submitResponse.intentId }, "Status polling timed out or errored");
-    });
 }
 
 async function runLoop(): Promise<void> {

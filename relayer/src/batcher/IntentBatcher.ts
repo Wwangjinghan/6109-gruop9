@@ -59,6 +59,10 @@ export class IntentBatcher {
     return this.store.get(intentId);
   }
 
+  getAllRecords(): IntentRecord[] {
+    return Array.from(this.store.values());
+  }
+
   stop(): void {
     if (this.timer) {
       clearTimeout(this.timer);
@@ -82,7 +86,7 @@ export class IntentBatcher {
     const records = this.queue.splice(0, this.config.maxBatchSize);
     records.forEach((r) => { r.status = "batched"; });
 
-    const { combinedSwaps, soloRecords } = combineIntents(
+    const { combinedSwaps } = combineIntents(
       records,
       this.config.swapRouter,
       this.config.defaultAccount,
@@ -90,20 +94,11 @@ export class IntentBatcher {
 
     const batchId = randomUUID();
 
-    // Encode solo (DCA / REBALANCE) records as placeholder calls.
-    // In a full implementation each action type would have its own encoder.
-    const singleCalls = soloRecords.map((r) => ({
-      intentId: r.id,
-      target: this.config.defaultAccount, // stub — real encoder TBD per action
-      value: 0n,
-      data: "0x" as `0x${string}`,
-    }));
-
     const batch: CombinedBatch = {
       batchId,
       account: this.config.defaultAccount,
       combinedSwaps,
-      singleCalls,
+      singleCalls: [],
       records,
       createdAt: Date.now(),
     };
@@ -111,12 +106,7 @@ export class IntentBatcher {
     records.forEach((r) => { r.batchId = batchId; });
 
     logger.info(
-      {
-        batchId,
-        total: records.length,
-        combinedSwapGroups: combinedSwaps.length,
-        soloActions: soloRecords.length,
-      },
+      { batchId, total: records.length, combinedSwapGroups: combinedSwaps.length },
       "Flushing combined batch",
     );
 

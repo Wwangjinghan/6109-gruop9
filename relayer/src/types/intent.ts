@@ -26,6 +26,13 @@ export const RebalanceParamsSchema = z.object({
   toleranceBps: z.number().int().min(0).max(500).default(50),
 });
 
+export const TransferParamsSchema = z.object({
+  // Token address — use zero address (0x000...000) for native ETH
+  token: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  to: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  amount: z.string().regex(/^\d+$/), // uint256 as decimal string
+});
+
 // ─── Top-level Intent schema (what the API accepts) ─────────────────────────
 
 export const IntentSchema = z.discriminatedUnion("action", [
@@ -58,12 +65,22 @@ export const IntentSchema = z.discriminatedUnion("action", [
     deadline: z.number().int().positive().optional(),
     nonce: z.number().int().nonnegative().optional(),
   }),
+  z.object({
+    userId: z.string().min(1),
+    action: z.literal("TRANSFER"),
+    params: TransferParamsSchema,
+    signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/, "Invalid 65-byte signature"),
+    account: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+    deadline: z.number().int().positive().optional(),
+    nonce: z.number().int().nonnegative().optional(),
+  }),
 ]);
 
 export type IntentPayload = z.infer<typeof IntentSchema>;
 export type SwapParams = z.infer<typeof SwapParamsSchema>;
 export type DcaParams = z.infer<typeof DcaParamsSchema>;
 export type RebalanceParams = z.infer<typeof RebalanceParamsSchema>;
+export type TransferParams = z.infer<typeof TransferParamsSchema>;
 
 // ─── Internal tracking record ─────────────────────────────────────────────────
 
@@ -73,7 +90,10 @@ export interface IntentRecord {
   id: string;
   payload: IntentPayload;
   status: IntentStatus;
-  receivedAt: number;
+  receivedAt: number;   // ms — intent arrived at relayer
+  submittedAt?: number; // ms — UserOp sent to EntryPoint
+  executedAt?: number;  // ms — on-chain receipt confirmed
+  gasUsed?: bigint;     // actual gas used by the batch transaction (from receipt)
   batchId?: string;
   userOpHash?: Hex;
   txHash?: Hex;

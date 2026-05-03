@@ -2,28 +2,47 @@
 # =============================================================================
 #  run_demo.sh — AgentIntent Protocol Integration Demo
 #
-#  What this script does:
-#    1. Start a local Anvil node (in-process chain)
-#    2. Deploy the canonical ERC-4337 EntryPoint (v0.7)
-#    3. Deploy IntentAccountFactory
-#    4. Create an IntentAccount for the demo user via the factory
-#    5. Fund the IntentAccount's EntryPoint deposit
-#    6. Start the Relayer (Express / TypeScript) in the background
-#    7. Run demo_submit.ts — fires 5 simultaneous SWAP intents
-#    8. Print the on-chain gas comparison report
-#    9. Tear everything down (Anvil + Relayer)
+#  Modes:
+#    ./run_demo.sh          — local Anvil (EVM L1 emulation, chain-id 31337)
+#    ./run_demo.sh --zk     — ZK Stack L2 (chain-id 271, must be running on :3050)
 #
-#  Prerequisites:
+#  What this script does:
+#    1.  Start a local Anvil node (L1 mode only; --zk assumes node already up)
+#    2.  Deploy the canonical ERC-4337 EntryPoint v0.7
+#    3.  Deploy IntentRegistry + IntentAccountFactory
+#    4.  Create an IntentAccount for the demo user via the factory
+#    5.  Fund the IntentAccount's EntryPoint deposit
+#    6.  Start the Relayer (Express / TypeScript) in the background
+#    7.  Run demo_submit.ts — fires 5 simultaneous SWAP intents
+#    8.  Print the on-chain gas comparison report
+#    9.  Tear everything down (Anvil + Relayer)
+#
+#  Prerequisites (L1 mode):
 #    • Node.js ≥ 20
 #    • Foundry (anvil, cast, forge)  — install via foundryup
 #    • npm workspaces installed       — run `npm install` at repo root first
 #
+#  Prerequisites (--zk mode, additional):
+#    • ZK Stack local node running on http://127.0.0.1:3050
+#    • foundry-zksync installed  — https://github.com/matter-labs/foundry-zksync
+#    • zksolc compiler available (foundry-zksync bundles it)
+#
 #  Usage:
 #    chmod +x run_demo.sh
-#    ./run_demo.sh
+#    ./run_demo.sh           # L1 demo
+#    ./run_demo.sh --zk      # ZK Stack L2 demo
 # =============================================================================
 
 set -euo pipefail
+
+# ─── Mode flag ────────────────────────────────────────────────────────────────
+ZK_MODE=false
+for arg in "$@"; do
+  case "$arg" in
+    --zk) ZK_MODE=true ;;
+    *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+  esac
+done
 
 # ─── Colour helpers ───────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -35,6 +54,12 @@ warn()    { echo -e "${YELLOW}[demo] ⚠${RESET} $*"; }
 fatal()   { echo -e "${RED}[demo] ✗${RESET} $*" >&2; exit 1; }
 step()    { echo -e "\n${BOLD}══ $* ${RESET}"; }
 
+if [[ "$ZK_MODE" == "true" ]]; then
+  echo -e "\n${BOLD}▶ AgentIntent — ZK Stack L2 Mode (chain 271)${RESET}\n"
+else
+  echo -e "\n${BOLD}▶ AgentIntent — Anvil L1 Mode (chain 31337)${RESET}\n"
+fi
+
 # ─── Cleanup trap ─────────────────────────────────────────────────────────────
 ANVIL_PID=""
 RELAYER_PID=""
@@ -44,7 +69,6 @@ cleanup() {
   info "Tearing down background processes…"
   [[ -n "$RELAYER_PID" ]] && kill "$RELAYER_PID" 2>/dev/null && info "Relayer stopped (PID $RELAYER_PID)"
   [[ -n "$ANVIL_PID"   ]] && kill "$ANVIL_PID"   2>/dev/null && info "Anvil stopped   (PID $ANVIL_PID)"
-  # Remove temporary env file
   [[ -f /tmp/agentintent_demo.env ]] && rm /tmp/agentintent_demo.env
 }
 trap cleanup EXIT
@@ -52,7 +76,10 @@ trap cleanup EXIT
 # ─── Dependency checks ────────────────────────────────────────────────────────
 step "Checking dependencies"
 
-for cmd in anvil cast forge node npm tsx; do
+REQUIRED_CMDS="cast forge node npm tsx"
+[[ "$ZK_MODE" == "false" ]] && REQUIRED_CMDS="anvil $REQUIRED_CMDS"
+
+for cmd in $REQUIRED_CMDS; do
   if command -v "$cmd" &>/dev/null; then
     success "$cmd found ($(command -v "$cmd"))"
   else
@@ -60,143 +87,199 @@ for cmd in anvil cast forge node npm tsx; do
   fi
 done
 
-# ─── Config constants ─────────────────────────────────────────────────────────
-ANVIL_PORT=8545
+# ─── Chain-specific config ────────────────────────────────────────────────────
 RELAYER_PORT=3001
-ANVIL_URL="http://127.0.0.1:${ANVIL_PORT}"
 RELAYER_URL="http://127.0.0.1:${RELAYER_PORT}"
 
-# Anvil deterministic accounts (from the standard mnemonic)
-#   Account 0 — deployer / owner
-#   Account 1 — relayer agent (signs UserOps)
-#   Account 2 — simulator / demo user
+# Accounts are the same for both modes (use deployer's key also for ZK)
 DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 RELAYER_KEY="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 AGENT_KEY="0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
 
 DEPLOYER_ADDR="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 RELAYER_ADDR="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-AGENT_ADDR="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 
-# Canonical ERC-4337 EntryPoint v0.7 bytecode (pre-deployed on all chains)
-ENTRY_POINT_ADDR="0x0000000071727De22E5E9d8BAf0edAc6f37da032"
-
-# Mock token addresses — we use Anvil's address space (no real ERC-20 needed
-# for the demo; the combiner only encodes calldata, it doesn't execute real swaps)
 MOCK_USDC="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 MOCK_WETH="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 MOCK_ROUTER="0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
 
-# ─── Step 1: Start Anvil ──────────────────────────────────────────────────────
-step "Step 1 — Starting local Anvil node"
+ENTRY_POINT_ADDR="0x0000000071727De22E5E9d8BAf0edAc6f37da032"
 
-anvil \
-  --port "$ANVIL_PORT" \
-  --block-time 1 \
-  --chain-id 31337 \
-  --silent &
-ANVIL_PID=$!
+if [[ "$ZK_MODE" == "true" ]]; then
+  CHAIN_NAME="zksync"
+  RPC_URL="http://127.0.0.1:3050"
+  ANVIL_PORT=""
+else
+  CHAIN_NAME="foundry"
+  ANVIL_PORT=8545
+  RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
+fi
 
-info "Waiting for Anvil to be ready…"
-for i in $(seq 1 20); do
-  if cast block-number --rpc-url "$ANVIL_URL" &>/dev/null; then
-    success "Anvil is up (PID $ANVIL_PID, chain-id 31337)"
-    break
-  fi
-  sleep 0.5
-  [[ $i -eq 20 ]] && fatal "Anvil did not start within 10s"
-done
+# ─── Step 1: Start Anvil (L1 only) ───────────────────────────────────────────
+if [[ "$ZK_MODE" == "false" ]]; then
+  step "Step 1 — Starting local Anvil node"
 
-# ─── Step 2: Deploy EntryPoint ────────────────────────────────────────────────
-step "Step 2 — Deploying ERC-4337 EntryPoint v0.7"
+  anvil \
+    --port "$ANVIL_PORT" \
+    --block-time 1 \
+    --chain-id 31337 \
+    --silent &
+  ANVIL_PID=$!
 
-# 1. Compile EntryPoint (outputs to contracts/out/)
-info "Compiling EntryPoint…"
-forge build \
-  --contracts contracts/lib/account-abstraction/contracts/core/EntryPoint.sol \
-  --root contracts --silent 2>&1
+  info "Waiting for Anvil to be ready…"
+  for i in $(seq 1 20); do
+    if cast block-number --rpc-url "$RPC_URL" &>/dev/null; then
+      success "Anvil is up (PID $ANVIL_PID, chain-id 31337)"
+      break
+    fi
+    sleep 0.5
+    [[ $i -eq 20 ]] && fatal "Anvil did not start within 10s"
+  done
+else
+  step "Step 1 — Verifying ZK Stack L2 node on $RPC_URL"
 
-EP_JSON="contracts/out/EntryPoint.sol/EntryPoint.json"
+  for i in $(seq 1 10); do
+    if cast block-number --rpc-url "$RPC_URL" &>/dev/null; then
+      ZK_BLOCK=$(cast block-number --rpc-url "$RPC_URL" 2>/dev/null || echo "?")
+      success "ZK Stack L2 is reachable (block $ZK_BLOCK)"
+      break
+    fi
+    sleep 1
+    [[ $i -eq 10 ]] && fatal "ZK Stack L2 node not reachable at $RPC_URL — start it first."
+  done
+fi
 
-if [[ -f "$EP_JSON" ]]; then
-  EP_BYTECODE=$(node -e "process.stdout.write(require('./${EP_JSON}').bytecode.object)")
+# ─── Step 2: Deploy EntryPoint (L1 only; ZK node has native AA) ──────────────
+SKIP_ONCHAIN=false
 
-  # 2. Deploy to a temporary address
-  info "Deploying EntryPoint bytecode…"
-  DEPLOYED=$(cast send \
-    --private-key "$DEPLOYER_KEY" \
-    --rpc-url "$ANVIL_URL" \
-    --create "$EP_BYTECODE" \
-    --json 2>/dev/null | node -e \
-    "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(d).contractAddress||'')}catch{}})")
+if [[ "$ZK_MODE" == "false" ]]; then
+  step "Step 2 — Deploying ERC-4337 EntryPoint v0.7"
 
-  if [[ -n "$DEPLOYED" ]]; then
-    # 3. Copy deployed code to the canonical address
-    EP_CODE=$(cast code "$DEPLOYED" --rpc-url "$ANVIL_URL")
-    cast rpc anvil_setCode "$ENTRY_POINT_ADDR" "$EP_CODE" \
-      --rpc-url "$ANVIL_URL" >/dev/null
+  info "Compiling EntryPoint…"
+  forge build \
+    --contracts contracts/lib/account-abstraction/contracts/core/EntryPoint.sol \
+    --root contracts --silent 2>&1
 
-    # 4. Verify
-    NONCE_CHECK=$(cast call "$ENTRY_POINT_ADDR" \
-      "getNonce(address,uint192)(uint256)" \
-      "$DEPLOYER_ADDR" 0 \
-      --rpc-url "$ANVIL_URL" 2>/dev/null || echo "")
+  EP_JSON="contracts/out/EntryPoint.sol/EntryPoint.json"
 
-    if [[ -n "$NONCE_CHECK" ]]; then
-      success "EntryPoint deployed and verified at $ENTRY_POINT_ADDR"
+  if [[ -f "$EP_JSON" ]]; then
+    EP_BYTECODE=$(node -e "process.stdout.write(require('./${EP_JSON}').bytecode.object)")
+
+    info "Deploying EntryPoint bytecode…"
+    DEPLOYED=$(cast send \
+      --private-key "$DEPLOYER_KEY" \
+      --rpc-url "$RPC_URL" \
+      --create "$EP_BYTECODE" \
+      --json 2>/dev/null | node -e \
+      "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(d).contractAddress||'')}catch{}})")
+
+    if [[ -n "$DEPLOYED" ]]; then
+      EP_CODE=$(cast code "$DEPLOYED" --rpc-url "$RPC_URL")
+      cast rpc anvil_setCode "$ENTRY_POINT_ADDR" "$EP_CODE" \
+        --rpc-url "$RPC_URL" >/dev/null
+
+      NONCE_CHECK=$(cast call "$ENTRY_POINT_ADDR" \
+        "getNonce(address,uint192)(uint256)" \
+        "$DEPLOYER_ADDR" 0 \
+        --rpc-url "$RPC_URL" 2>/dev/null || echo "")
+
+      if [[ -n "$NONCE_CHECK" ]]; then
+        success "EntryPoint deployed and verified at $ENTRY_POINT_ADDR"
+      else
+        warn "EntryPoint code set but getNonce check failed"
+        SKIP_ONCHAIN=true
+      fi
     else
-      warn "EntryPoint code set but getNonce check failed"
+      warn "EntryPoint deployment failed — skipping on-chain execution"
       SKIP_ONCHAIN=true
     fi
   else
-    warn "EntryPoint deployment failed — skipping on-chain execution"
+    warn "EntryPoint artifact not found after build — skipping on-chain execution"
     SKIP_ONCHAIN=true
   fi
+
+  [[ "$SKIP_ONCHAIN" == "true" ]] && \
+    warn "On-chain execution will be skipped (batching logic still verified)"
 else
-  warn "EntryPoint artifact not found after build — skipping on-chain execution"
-  SKIP_ONCHAIN=true
+  step "Step 2 — Skipping EntryPoint deploy (ZK Stack has native AA)"
+  info "ZK Stack L2 provides native account abstraction; EntryPoint is deployed by the node."
 fi
 
-[[ "${SKIP_ONCHAIN:-false}" == "true" ]] && \
-  warn "On-chain execution will be skipped (batching logic still verified)"
-
-# ─── Step 3: Deploy contracts via Forge ───────────────────────────────────────
-step "Step 3 — Deploying IntentAccountFactory (forge script)"
-
+# ─── Step 3: Deploy contracts ─────────────────────────────────────────────────
 FACTORY_ADDR=""
 REGISTRY_ADDR=""
 
-if forge build --root contracts 2>&1; then
-  success "Contracts compiled"
+if [[ "$ZK_MODE" == "false" ]]; then
+  step "Step 3 — Deploying IntentAccountFactory (forge script)"
 
-  info "Running forge script Deploy.s.sol…"
-  DEPLOY_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" forge script \
-    contracts/script/Deploy.s.sol \
-    --rpc-url "$ANVIL_URL" \
-    --broadcast \
-    --root contracts 2>&1) && DEPLOY_OK=true || DEPLOY_OK=false
+  if forge build --root contracts 2>&1; then
+    success "Contracts compiled"
 
-  # Always print forge script output so errors are visible
-  echo "$DEPLOY_OUTPUT" | sed 's/^/  [forge] /'
+    info "Running forge script Deploy.s.sol…"
+    DEPLOY_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" forge script \
+      contracts/script/Deploy.s.sol \
+      --rpc-url "$RPC_URL" \
+      --broadcast \
+      --root contracts 2>&1) && DEPLOY_OK=true || DEPLOY_OK=false
 
-  if [[ "$DEPLOY_OK" == "true" ]]; then
-    REGISTRY_ADDR=$(echo "$DEPLOY_OUTPUT" | grep -oP 'IntentRegistry deployed at: \K0x[0-9a-fA-F]+' | head -1)
-    FACTORY_ADDR=$(echo "$DEPLOY_OUTPUT"  | grep -oP 'IntentAccountFactory deployed at: \K0x[0-9a-fA-F]+' | head -1)
-    [[ -z "$FACTORY_ADDR" ]] && warn "Could not parse factory address from forge output"
+    echo "$DEPLOY_OUTPUT" | sed 's/^/  [forge] /'
+
+    if [[ "$DEPLOY_OK" == "true" ]]; then
+      REGISTRY_ADDR=$(echo "$DEPLOY_OUTPUT" | grep -oP 'IntentRegistry deployed at: \K0x[0-9a-fA-F]+' | head -1)
+      FACTORY_ADDR=$(echo "$DEPLOY_OUTPUT"  | grep -oP 'IntentAccountFactory deployed at: \K0x[0-9a-fA-F]+' | head -1)
+      [[ -z "$FACTORY_ADDR" ]] && warn "Could not parse factory address from forge output"
+    else
+      warn "forge script failed — see [forge] output above"
+    fi
   else
-    warn "forge script failed — see [forge] output above"
+    warn "forge build failed — see output above"
   fi
+
 else
-  warn "forge build failed — see output above"
+  step "Step 3 — Deploying contracts to ZK Stack L2 (foundry-zksync)"
+
+  # Check for .env.zk with previously deployed addresses
+  ZK_ENV="contracts/script/.env.zk"
+  if [[ -f "$ZK_ENV" ]]; then
+    info "Found existing $ZK_ENV — loading addresses…"
+    # shellcheck disable=SC1090
+    source "$ZK_ENV"
+    ENTRY_POINT_ADDR="${ZK_ENTRY_POINT:-$ENTRY_POINT_ADDR}"
+    REGISTRY_ADDR="${ZK_REGISTRY:-}"
+    FACTORY_ADDR="${ZK_FACTORY:-}"
+    success "Loaded: EntryPoint=$ENTRY_POINT_ADDR  Registry=$REGISTRY_ADDR  Factory=$FACTORY_ADDR"
+  else
+    info "Running DeployZK.s.sol via foundry-zksync…"
+    warn "This requires foundry-zksync (forge with --zksync flag). See https://github.com/matter-labs/foundry-zksync"
+
+    DEPLOY_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" FOUNDRY_PROFILE=zksync forge script \
+      contracts/script/DeployZK.s.sol \
+      --rpc-url "$RPC_URL" \
+      --broadcast \
+      --zksync \
+      --zk-gas-per-pubdata 800 \
+      --slow \
+      --root contracts 2>&1) && DEPLOY_OK=true || DEPLOY_OK=false
+
+    echo "$DEPLOY_OUTPUT" | sed 's/^/  [forge-zk] /'
+
+    if [[ "$DEPLOY_OK" == "true" && -f "$ZK_ENV" ]]; then
+      # shellcheck disable=SC1090
+      source "$ZK_ENV"
+      ENTRY_POINT_ADDR="${ZK_ENTRY_POINT:-$ENTRY_POINT_ADDR}"
+      REGISTRY_ADDR="${ZK_REGISTRY:-}"
+      FACTORY_ADDR="${ZK_FACTORY:-}"
+    else
+      warn "ZK deployment failed or .env.zk not written — see [forge-zk] output above"
+      SKIP_ONCHAIN=true
+    fi
+  fi
 fi
 
-# Fallback: deploy factory directly with cast if forge script didn't produce an address
-if [[ -z "$FACTORY_ADDR" ]]; then
-  info "Deploying IntentAccountFactory via cast (fallback)"
-  # Deploy a minimal contract that records the factory address for the demo
-  # We use address(0) as placeholder — demo_submit.ts uses the account address directly
+# Fallback for L1 mode if forge script didn't produce an address
+if [[ "$ZK_MODE" == "false" && -z "$FACTORY_ADDR" ]]; then
   FACTORY_ADDR="0x0000000000000000000000000000000000000000"
-  warn "Factory not deployed on-chain — demo will run in relayer-only mode (batching verified, not on-chain execution)"
+  warn "Factory not deployed on-chain — demo will run in relayer-only mode"
   SKIP_ONCHAIN=true
 fi
 
@@ -209,19 +292,17 @@ step "Step 4 — Creating IntentAccount for demo user"
 ACCOUNT_ADDR=""
 
 if [[ -n "$FACTORY_ADDR" && "$FACTORY_ADDR" != "0x000"* ]]; then
-  # Call factory.createAccount(owner=DEPLOYER, agent=RELAYER_ADDR, salt=0)
   CREATE_RESULT=$(cast send "$FACTORY_ADDR" \
     "createAccount(address,address,uint256)(address)" \
     "$DEPLOYER_ADDR" "$RELAYER_ADDR" "0" \
     --private-key "$DEPLOYER_KEY" \
-    --rpc-url "$ANVIL_URL" \
+    --rpc-url "$RPC_URL" \
     --json 2>/dev/null || echo '{}')
 
-  # Read the predicted address via call
   ACCOUNT_ADDR=$(cast call "$FACTORY_ADDR" \
     "getAddress(address,address,uint256)(address)" \
     "$DEPLOYER_ADDR" "$RELAYER_ADDR" "0" \
-    --rpc-url "$ANVIL_URL" 2>/dev/null || echo "")
+    --rpc-url "$RPC_URL" 2>/dev/null || echo "")
 
   if [[ -n "$ACCOUNT_ADDR" && "$ACCOUNT_ADDR" != "0x000"* ]]; then
     success "IntentAccount at $ACCOUNT_ADDR"
@@ -237,12 +318,12 @@ fi
 # ─── Step 5: Fund EntryPoint deposit ─────────────────────────────────────────
 step "Step 5 — Funding IntentAccount EntryPoint deposit"
 
-if [[ "${SKIP_ONCHAIN:-false}" == "false" ]]; then
+if [[ "$SKIP_ONCHAIN" == "false" ]]; then
   cast send "$ENTRY_POINT_ADDR" \
     "depositTo(address)" "$ACCOUNT_ADDR" \
     --value "1ether" \
     --private-key "$DEPLOYER_KEY" \
-    --rpc-url "$ANVIL_URL" \
+    --rpc-url "$RPC_URL" \
     --silent 2>/dev/null && success "Deposited 1 ETH to EntryPoint for $ACCOUNT_ADDR" \
     || warn "depositTo call failed — account may not have enough prefund"
 else
@@ -252,11 +333,10 @@ fi
 # ─── Step 6: Start the Relayer ────────────────────────────────────────────────
 step "Step 6 — Starting the Relayer (Express / TypeScript)"
 
-# Write a temp .env for the relayer
 cat > /tmp/agentintent_demo.env <<EOF
 PORT=${RELAYER_PORT}
-CHAIN=foundry
-RPC_URL=${ANVIL_URL}
+CHAIN=${CHAIN_NAME}
+RPC_URL=${RPC_URL}
 RELAYER_PRIVATE_KEY=${RELAYER_KEY}
 ACCOUNT_ADDRESS=${ACCOUNT_ADDR}
 SWAP_ROUTER_ADDRESS=${MOCK_ROUTER}
@@ -266,15 +346,14 @@ BATCH_WINDOW_MS=3000
 LOG_LEVEL=warn
 EOF
 
-# Start relayer with the temporary env file
+# Kill anything already on the port before starting
+fuser -k ${RELAYER_PORT}/tcp 2>/dev/null || true
+sleep 0.5
+
 (cd relayer && \
   set -a && source /tmp/agentintent_demo.env && set +a && \
   npm run dev 2>&1 | sed 's/^/  [relayer] /' ) &
 RELAYER_PID=$!
-
-# Kill anything already on the port before starting
-fuser -k ${RELAYER_PORT}/tcp 2>/dev/null || true
-sleep 0.5
 
 info "Waiting for Relayer to be ready on port $RELAYER_PORT…"
 for i in $(seq 1 60); do
@@ -289,6 +368,10 @@ done
 # ─── Step 7: Run the Demo Submit Script ───────────────────────────────────────
 step "Step 7 — Firing 5 simultaneous SWAP intents"
 
+if [[ "$ZK_MODE" == "true" ]]; then
+  info "Running on ZK Stack L2 — expect 2ms soft confirmation, ~9.5× lower gas vs L1"
+fi
+
 DEMO_RELAYER_URL="$RELAYER_URL" \
 DEMO_AGENT_PRIVATE_KEY="$AGENT_KEY" \
 DEMO_TOKEN_IN="$MOCK_USDC" \
@@ -300,11 +383,18 @@ DEMO_ACCOUNT_ADDRESS="$ACCOUNT_ADDR" \
 echo ""
 success "Demo complete."
 echo ""
-echo -e "  ${CYAN}Anvil explorer${RESET}  : ${ANVIL_URL}"
-echo -e "  ${CYAN}Relayer health${RESET}   : ${RELAYER_URL}/health"
+if [[ "$ZK_MODE" == "true" ]]; then
+  echo -e "  ${CYAN}ZK Stack L2 RPC${RESET}  : ${RPC_URL}"
+  echo -e "  ${CYAN}Chain ID${RESET}          : 271"
+  echo -e "  ${CYAN}Mode${RESET}              : ZK Stack L2 (native AA, paris EVM)"
+else
+  echo -e "  ${CYAN}Anvil explorer${RESET}    : ${RPC_URL}"
+  echo -e "  ${CYAN}Chain ID${RESET}          : 31337"
+  echo -e "  ${CYAN}Mode${RESET}              : Local Anvil (EVM L1 emulation)"
+fi
+echo -e "  ${CYAN}Relayer health${RESET}    : ${RELAYER_URL}/health"
 echo ""
-echo -e "  Press ${BOLD}Ctrl+C${RESET} to stop Anvil and the Relayer."
+echo -e "  Press ${BOLD}Ctrl+C${RESET} to stop the Relayer$([ "$ZK_MODE" == "false" ] && echo " and Anvil" || echo "")."
 echo ""
 
-# Keep running until user interrupts (trap will clean up)
 wait "$RELAYER_PID" 2>/dev/null || true

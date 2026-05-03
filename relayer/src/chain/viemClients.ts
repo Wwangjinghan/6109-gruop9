@@ -9,16 +9,35 @@ import {
   type Address,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { sepolia, mainnet, foundry } from "viem/chains";
+import { sepolia, mainnet, foundry, zksync, zksyncSepoliaTestnet } from "viem/chains";
 import { ENTRY_POINT_ABI, ENTRY_POINT_ADDRESS } from "../abi/entryPoint.js";
 
 // ─── Chain selection ──────────────────────────────────────────────────────────
 
-const CHAIN_MAP: Record<string, Chain> = { sepolia, mainnet, foundry, anvil: foundry, localhost: foundry };
+// ZK Stack local devnet (chain ID 271, RPC http://127.0.0.1:3050)
+const zksyncLocal: Chain = {
+  ...zksync,
+  id: 271,
+  name: "ZK Stack Local",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["http://127.0.0.1:3050"] }, public: { http: ["http://127.0.0.1:3050"] } },
+};
+
+const CHAIN_MAP: Record<string, Chain> = {
+  sepolia,
+  mainnet,
+  foundry,
+  anvil: foundry,
+  localhost: foundry,
+  zksync: zksyncLocal,
+  zksync_local: zksyncLocal,
+  era: zksyncLocal,
+  zksync_sepolia: zksyncSepoliaTestnet,
+};
 
 export function resolveChain(name: string): Chain {
   const chain = CHAIN_MAP[name.toLowerCase()];
-  if (!chain) throw new Error(`Unsupported chain: ${name}. Use 'sepolia', 'mainnet', or 'foundry'.`);
+  if (!chain) throw new Error(`Unsupported chain: ${name}. Use 'sepolia', 'mainnet', 'foundry', or 'zksync'.`);
   return chain;
 }
 

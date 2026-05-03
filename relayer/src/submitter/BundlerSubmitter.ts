@@ -14,6 +14,40 @@ export interface SubmitterConfig {
   publicClient: PublicClient;
   agentAddress: Address;
   entryPointAddress?: Address;
+  /**
+   * Maximum number of batches that can be in flight (building + waiting for receipt)
+   * simultaneously. Prevents nonce collisions on a single account while still
+   * allowing independent accounts to be processed in parallel.
+   * Default: 3
+   */
+  maxConcurrent?: number;
+}
+
+/**
+ * Minimal semaphore — limits how many async tasks run simultaneously.
+ */
+class Semaphore {
+  private running = 0;
+  private readonly queue: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.running < this.limit) {
+      this.running++;
+      return;
+    }
+    return new Promise((resolve) => this.queue.push(resolve));
+  }
+
+  release(): void {
+    this.running--;
+    const next = this.queue.shift();
+    if (next) {
+      this.running++;
+      next();
+    }
+  }
 }
 
 export class BundlerSubmitter {
@@ -22,6 +56,7 @@ export class BundlerSubmitter {
   private readonly agentAddress: Address;
   private readonly entryPointAddress: Address;
   private readonly builder: UserOpBuilder;
+  private readonly semaphore: Semaphore;
 
   constructor(config: SubmitterConfig) {
     this.walletClient = config.walletClient;
@@ -29,10 +64,14 @@ export class BundlerSubmitter {
     this.agentAddress = config.agentAddress;
     this.entryPointAddress = config.entryPointAddress ?? ENTRY_POINT_ADDRESS;
     this.builder = new UserOpBuilder(this.publicClient, this.entryPointAddress);
+    this.semaphore = new Semaphore(config.maxConcurrent ?? 3);
   }
 
   /**
-   * Full pipeline for a CombinedBatch:
+   * Full pipeline for a CombinedBatch.
+   * Concurrent calls are allowed up to maxConcurrent; additional callers wait
+   * on the semaphore so nonce ordering is preserved within the limit.
+   *
    *   1. Build the unsigned PackedUserOperation (calls merged via UserOpBuilder)
    *   2. Fetch the userOpHash from the EntryPoint
    *   3. Sign the hash with the agent key (EIP-191)
@@ -40,6 +79,15 @@ export class BundlerSubmitter {
    *   5. Wait for receipt and update intent record statuses
    */
   async submitBatch(batch: CombinedBatch): Promise<Hex> {
+    await this.semaphore.acquire();
+    try {
+      return await this._submitBatchInner(batch);
+    } finally {
+      this.semaphore.release();
+    }
+  }
+
+  private async _submitBatchInner(batch: CombinedBatch): Promise<Hex> {
     logger.info({ batchId: batch.batchId, account: batch.account }, "Building UserOp");
 
     // 1. Build unsigned op
@@ -54,15 +102,26 @@ export class BundlerSubmitter {
     const signedOp: PackedUserOperation = { ...userOp, signature };
 
     // 4. Submit via EntryPoint.handleOps
+    const submittedAt = Date.now();
     const txHash = await this._handleOps(signedOp);
     logger.info({ batchId: batch.batchId, txHash }, "UserOp submitted — waiting for receipt");
 
+    // Mark submittedAt on all records the moment the tx is broadcast
+    batch.records.forEach((r) => { r.submittedAt = submittedAt; });
+
     // 5. Wait for inclusion
     const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+    const executedAt = Date.now();
     const success = receipt.status === "success";
 
     logger.info(
-      { batchId: batch.batchId, txHash, success, gasUsed: receipt.gasUsed.toString() },
+      {
+        batchId: batch.batchId,
+        txHash,
+        success,
+        gasUsed: receipt.gasUsed.toString(),
+        latencyMs: executedAt - submittedAt,
+      },
       success ? "Batch executed" : "Batch transaction reverted",
     );
 
@@ -72,6 +131,8 @@ export class BundlerSubmitter {
       r.status = nextStatus;
       r.txHash = txHash;
       r.userOpHash = userOpHash;
+      r.executedAt = executedAt;
+      r.gasUsed = receipt.gasUsed;
     });
 
     return txHash;

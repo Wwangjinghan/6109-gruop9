@@ -10,16 +10,40 @@ contract IntentRegistry is IIntentRegistry {
     mapping(bytes32 => IntentStatus) public intentStatus;
     mapping(bytes32 => Intent) private _intents;
 
+    address public owner;
+    mapping(address => bool) public trustedBundlers;
+
     uint256 private _nonce;
 
     event IntentRegistered(bytes32 indexed intentId, address indexed sender, uint256 deadline);
     event IntentExecuted(bytes32 indexed intentId);
     event IntentCancelled(bytes32 indexed intentId);
+    event BundlerUpdated(address indexed bundler, bool trusted);
 
     error IntentAlreadyRegistered();
     error IntentNotFound();
     error IntentExpired();
     error Unauthorized();
+
+    constructor() {
+        owner = msg.sender;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert Unauthorized();
+        _;
+    }
+
+    modifier onlyTrustedBundler() {
+        if (!trustedBundlers[msg.sender]) revert Unauthorized();
+        _;
+    }
+
+    /// @notice Grant or revoke bundler trust. Only callable by the registry owner.
+    function setBundler(address bundler, bool trusted) external onlyOwner {
+        trustedBundlers[bundler] = trusted;
+        emit BundlerUpdated(bundler, trusted);
+    }
 
     function registerIntent(Intent calldata intent, bytes calldata signature) external returns (bytes32 intentId) {
         intentId = _hashIntent(intent);
@@ -35,7 +59,7 @@ contract IntentRegistry is IIntentRegistry {
         emit IntentRegistered(intentId, intent.sender, intent.deadline);
     }
 
-    function markExecuted(bytes32 intentId) external {
+    function markExecuted(bytes32 intentId) external onlyTrustedBundler {
         if (_intents[intentId].sender == address(0)) revert IntentNotFound();
         intentStatus[intentId] = IntentStatus.Executed;
         emit IntentExecuted(intentId);

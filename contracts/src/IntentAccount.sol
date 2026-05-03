@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {BaseAccount} from "account-abstraction/core/BaseAccount.sol";
 import {IEntryPoint} from "account-abstraction/interfaces/IEntryPoint.sol";
+import {IAccountExecute} from "account-abstraction/interfaces/IAccountExecute.sol";
 import {PackedUserOperation} from "account-abstraction/interfaces/PackedUserOperation.sol";
 import {SIG_VALIDATION_SUCCESS, SIG_VALIDATION_FAILED} from "account-abstraction/core/Helpers.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -12,7 +13,12 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
 /// @notice ERC-4337 smart account that accepts UserOperations signed by either
 ///         the owner OR a designated agent address. The agent role is intended for
 ///         relayer-side signers that execute batched intents on the owner's behalf.
-contract IntentAccount is BaseAccount, Ownable {
+///
+///         Implements IAccountExecute so the EntryPoint can forward the full
+///         UserOperation to the account when callData begins with
+///         executeUserOp.selector. This lets intent-level context (userOpHash)
+///         be available during execution — useful for on-chain intent verification.
+contract IntentAccount is BaseAccount, IAccountExecute, Ownable {
     using ECDSA for bytes32;
 
     IEntryPoint private immutable _entryPoint;
@@ -64,6 +70,35 @@ contract IntentAccount is BaseAccount, Ownable {
     // ──────────────────────────────────────────────────────────────────────────
     // Execution
     // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * @inheritdoc IAccountExecute
+     *
+     * Called by the EntryPoint when userOp.callData starts with this function's
+     * selector (0x8dd7712f). The remaining callData (after the 4-byte selector)
+     * is decoded as a Call[] batch so a single UserOperation can carry intent
+     * context alongside the execution payload.
+     *
+     * Encoding convention (must match the relayer's UserOpBuilder when using
+     * this path):
+     *   abi.encodeWithSelector(executeUserOp.selector, userOp, userOpHash)
+     *   where the actual calls are packed inside userOp.callData as Call[].
+     */
+    function executeUserOp(
+        PackedUserOperation calldata userOp,
+        bytes32 /*userOpHash*/
+    ) external override {
+        _requireFromEntryPoint();
+
+        // The inner callData encodes the real execution payload: either a single
+        // execute() call or an executeBatch() call. We delegate to _executeInner
+        // so we don't duplicate the assembly revert logic.
+        bytes memory innerCallData = userOp.callData[4:]; // strip executeUserOp selector
+        (bool ok, bytes memory result) = address(this).call(innerCallData);
+        if (!ok) {
+            assembly { revert(add(result, 32), mload(result)) }
+        }
+    }
 
     /// @notice Execute a single call. Callable by the EntryPoint or the owner.
     function execute(address target, uint256 value, bytes calldata data) external override {

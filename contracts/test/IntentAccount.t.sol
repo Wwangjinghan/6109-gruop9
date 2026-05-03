@@ -217,6 +217,31 @@ contract IntentAccountTest is Test {
     }
 
     // ──────────────────────────────────────────────────────────────────────────
+    // IAccountExecute: executeUserOp path
+    // ──────────────────────────────────────────────────────────────────────────
+
+    function test_ExecuteUserOpPath() public {
+        // Encode inner callData: a single execute() call transferring 0.3 ETH
+        bytes memory innerCallData = abi.encodeCall(
+            IntentAccount.execute,
+            (recipient, 0.3 ether, "")
+        );
+
+        // Wrap in executeUserOp selector so the EntryPoint takes the executeUserOp path
+        bytes memory outerCallData = abi.encodePacked(
+            IntentAccount.executeUserOp.selector,
+            innerCallData
+        );
+
+        PackedUserOperation memory op = _buildUserOp(outerCallData);
+        op = _signOp(op, agentPk);
+
+        uint256 before = recipient.balance;
+        _submitOp(op);
+        assertEq(recipient.balance, before + 0.3 ether, "executeUserOp path failed");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Utilities
     // ──────────────────────────────────────────────────────────────────────────
 

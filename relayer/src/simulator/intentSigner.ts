@@ -6,7 +6,7 @@ import {
   type WalletClient,
   type Address,
 } from "viem";
-import type { DcaParams, IntentPayload } from "../types/intent.js";
+import type { DcaParams, RebalanceParams, IntentPayload } from "../types/intent.js";
 
 // ─── Payload builders ─────────────────────────────────────────────────────────
 
@@ -62,9 +62,6 @@ export async function buildSignedDcaIntent(
 /**
  * Deterministic hash of a DCA intent.
  * keccak256(abi.encode(userId, action, tokenIn, tokenOut, amountPerInterval, intervalSeconds, totalIntervals))
- *
- * Kept as a separate export so tests and the relayer verifier can reproduce
- * the hash without a live wallet.
  */
 export function hashDcaIntent(userId: string, params: DcaParams): Hex {
   return keccak256(
@@ -80,6 +77,69 @@ export function hashDcaIntent(userId: string, params: DcaParams): Hex {
         BigInt(params.amountPerInterval),
         BigInt(params.intervalSeconds),
         BigInt(params.totalIntervals),
+      ],
+    ),
+  );
+}
+
+// ─── Rebalance intent ─────────────────────────────────────────────────────────
+
+export interface RebalanceIntentInput {
+  userId: string;
+  tokens: Address[];
+  targetWeightsBps: number[];  // must sum to 10_000
+  toleranceBps?: number;       // default 50 (0.5%)
+  account?: Address;
+  deadline?: number;
+  nonce?: number;
+}
+
+/**
+ * Build and sign a REBALANCE intent payload ready to POST to /intents.
+ */
+export async function buildSignedRebalanceIntent(
+  input: RebalanceIntentInput,
+  walletClient: WalletClient,
+): Promise<IntentPayload> {
+  const params: RebalanceParams = {
+    tokens: input.tokens,
+    targetWeightsBps: input.targetWeightsBps,
+    toleranceBps: input.toleranceBps ?? 50,
+  };
+
+  const intentHash = hashRebalanceIntent(input.userId, params);
+  const signature = await walletClient.signMessage({
+    account: walletClient.account!,
+    message: { raw: intentHash },
+  });
+
+  return {
+    userId: input.userId,
+    action: "REBALANCE",
+    params,
+    signature,
+    account: input.account,
+    deadline: input.deadline ?? Math.floor(Date.now() / 1000) + 3600,
+    nonce: input.nonce ?? 0,
+  };
+}
+
+/**
+ * Deterministic hash of a REBALANCE intent.
+ * keccak256(abi.encode(userId, action, tokens[], targetWeightsBps[], toleranceBps))
+ */
+export function hashRebalanceIntent(userId: string, params: RebalanceParams): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      parseAbiParameters(
+        "string userId, string action, address[] tokens, uint256[] targetWeightsBps, uint256 toleranceBps",
+      ),
+      [
+        userId,
+        "REBALANCE",
+        params.tokens as Address[],
+        params.targetWeightsBps.map(BigInt),
+        BigInt(params.toleranceBps ?? 50),
       ],
     ),
   );

@@ -6,17 +6,27 @@ import { IntentQueuePanel } from "@/components/dashboard/IntentQueuePanel";
 import { GasSavingsChart } from "@/components/dashboard/GasSavingsChart";
 import { ThroughputChart } from "@/components/dashboard/ThroughputChart";
 import { useDashboardMetrics, generateDemoRecords } from "@/lib/useDashboard";
-import type { IntentRecord } from "@/lib/dashboardTypes";
+import type { IntentRecord, DashboardMetrics } from "@/lib/dashboardTypes";
 import { Badge } from "@/components/ui/badge";
 
 const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://localhost:3001";
 const DEMO_TOTAL = 40;
 const LIVE_POLL_MS = 3_000;
 
-// ── Live mode ──────────────────────────────────────────────────────────────────
-// The relayer exposes GET /intents/:id.  In a real deployment the dashboard
-// would consume a paginated GET /intents endpoint; here we use a local registry
-// kept in sessionStorage so a page refresh doesn't lose the submitted IDs.
+// ── Relayer /metrics response shape ───────────────────────────────────────────
+interface RelayerMetrics {
+  total: number;
+  executedCount: number;
+  failedCount: number;
+  failedRatePct: number;
+  avgLatencyMs: number | null;
+  maxLatencyMs: number | null;
+  peakTps: number;
+  avgGasPerBatch: number | null;
+  gasDataPoints: number;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function loadStoredIds(): string[] {
   if (typeof sessionStorage === "undefined") return [];
@@ -27,17 +37,25 @@ function loadStoredIds(): string[] {
   }
 }
 
-function storeIds(ids: string[]) {
-  if (typeof sessionStorage !== "undefined") {
-    sessionStorage.setItem("intentIds", JSON.stringify(ids));
-  }
-}
-
 async function fetchRecord(intentId: string): Promise<IntentRecord | null> {
   try {
     const res = await fetch(`${RELAYER_URL}/intents/${intentId}`, { cache: "no-store" });
     if (!res.ok) return null;
-    return (await res.json()) as IntentRecord;
+    const raw = await res.json();
+    // gasUsed arrives as decimal string from bigint serialisation
+    if (raw.gasUsed != null) raw.gasUsed = Number(raw.gasUsed);
+    // latencyMs may be computed server-side; keep it if present
+    return raw as IntentRecord;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRelayerMetrics(): Promise<RelayerMetrics | null> {
+  try {
+    const res = await fetch(`${RELAYER_URL}/metrics`, { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as RelayerMetrics;
   } catch {
     return null;
   }
@@ -52,22 +70,17 @@ async function probeRelayer(): Promise<boolean> {
   }
 }
 
-// ── Demo mode: add simulated intents over time ─────────────────────────────────
+// ── Demo mode ─────────────────────────────────────────────────────────────────
 function useDemoRecords() {
   const [records, setRecords] = useState<IntentRecord[]>([]);
 
   useEffect(() => {
-    // Start with half the dataset already visible
     const initial = generateDemoRecords(Math.floor(DEMO_TOTAL / 2));
     setRecords(initial);
 
-    // Trickle in new intents every ~2s to simulate live activity
     let remaining = DEMO_TOTAL - initial.length;
     const interval = setInterval(() => {
-      if (remaining <= 0) {
-        clearInterval(interval);
-        return;
-      }
+      if (remaining <= 0) { clearInterval(interval); return; }
       const batch = generateDemoRecords(Math.min(3, remaining));
       remaining -= batch.length;
       setRecords((prev) => [...prev, ...batch]);
@@ -79,15 +92,23 @@ function useDemoRecords() {
   return records;
 }
 
-// ── Live mode: poll known intent IDs from the relayer ──────────────────────────
-function useLiveRecords() {
+// ── Live mode — polls both /intents/:id AND /metrics ──────────────────────────
+function useLiveData(): { records: IntentRecord[]; serverMetrics: RelayerMetrics | null } {
   const [records, setRecords] = useState<IntentRecord[]>([]);
+  const [serverMetrics, setServerMetrics] = useState<RelayerMetrics | null>(null);
 
   const refresh = useCallback(async () => {
+    // Fetch both in parallel
     const ids = loadStoredIds();
-    if (ids.length === 0) return;
-    const results = await Promise.all(ids.map(fetchRecord));
+    const [results, metrics] = await Promise.all([
+      ids.length > 0
+        ? Promise.all(ids.map(fetchRecord))
+        : Promise.resolve([]),
+      fetchRelayerMetrics(),
+    ]);
+
     setRecords(results.filter((r): r is IntentRecord => r !== null));
+    if (metrics) setServerMetrics(metrics);
   }, []);
 
   useEffect(() => {
@@ -96,7 +117,6 @@ function useLiveRecords() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  // Expose a way for the page to register a newly submitted intentId
   useEffect(() => {
     function onStorage(e: StorageEvent) {
       if (e.key === "intentIds") refresh();
@@ -105,10 +125,38 @@ function useLiveRecords() {
     return () => window.removeEventListener("storage", onStorage);
   }, [refresh]);
 
-  return records;
+  return { records, serverMetrics };
 }
 
-// ── Main client component ──────────────────────────────────────────────────────
+// ── Merge server metrics into computed DashboardMetrics ───────────────────────
+// Server-side aggregates (covering ALL intents, incl. Simulator) override
+// the client-side calculations that only see sessionStorage intents.
+function mergeServerMetrics(
+  computed: DashboardMetrics,
+  server: RelayerMetrics | null,
+): DashboardMetrics {
+  if (!server) return computed;
+  return {
+    ...computed,
+    // Use server totals — these include Simulator-submitted intents too
+    totalIntents:   server.total,
+    executedCount:  server.executedCount,
+    failedCount:    server.failedCount,
+    failedRatePct:  server.failedRatePct,
+    // Server latency is authoritative (computed across all batches)
+    avgLatencyMs:   server.avgLatencyMs ?? computed.avgLatencyMs,
+    maxLatencyMs:   server.maxLatencyMs ?? computed.maxLatencyMs,
+    // Real gas from on-chain receipts — server deduplicates by batchId
+    avgGasPerBatch: server.avgGasPerBatch ?? computed.avgGasPerBatch,
+    gasDataPoints:  server.gasDataPoints ?? computed.gasDataPoints,
+    // peakTps from server is global; override client-side TPS chart peak
+    tpsHistory: computed.tpsHistory.length > 0
+      ? computed.tpsHistory
+      : [{ time: "now", tps: server.peakTps, timestamp: Date.now() }],
+  };
+}
+
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export function DashboardClient() {
   const [mode, setMode] = useState<"checking" | "live" | "demo">("checking");
@@ -118,10 +166,11 @@ export function DashboardClient() {
   }, []);
 
   const demoRecords = useDemoRecords();
-  const liveRecords = useLiveRecords();
+  const { records: liveRecords, serverMetrics } = useLiveData();
 
   const records: IntentRecord[] = mode === "live" ? liveRecords : demoRecords;
-  const metrics = useDashboardMetrics(records);
+  const computed = useDashboardMetrics(records);
+  const metrics = mode === "live" ? mergeServerMetrics(computed, serverMetrics) : computed;
 
   return (
     <div className="w-full max-w-7xl mx-auto space-y-6 p-6">
@@ -134,12 +183,15 @@ export function DashboardClient() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {mode === "checking" && (
-            <Badge variant="secondary">Connecting…</Badge>
-          )}
+          {mode === "checking" && <Badge variant="secondary">Connecting…</Badge>}
           {mode === "live" && (
             <Badge variant="default" className="bg-emerald-600 hover:bg-emerald-700">
               Live — {RELAYER_URL}
+              {serverMetrics && (
+                <span className="ml-2 opacity-75 font-normal">
+                  {serverMetrics.total} intents
+                </span>
+              )}
             </Badge>
           )}
           {mode === "demo" && (

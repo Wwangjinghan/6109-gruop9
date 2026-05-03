@@ -45,15 +45,28 @@ export function MetricsSummary({ metrics }: Props) {
     totalGasSavedPct,
     avgLatencyMs,
     maxLatencyMs,
+    avgGasPerBatch,
+    gasDataPoints,
   } = metrics;
 
-  const latencyLabel =
-    avgLatencyMs != null ? `${avgLatencyMs} ms` : "—";
-  const latencySub =
-    maxLatencyMs != null ? `max ${maxLatencyMs} ms` : "no data yet";
+  const latencyLabel = avgLatencyMs != null ? `${avgLatencyMs} ms` : "—";
+  const latencySub   = maxLatencyMs != null ? `max ${maxLatencyMs} ms` : "no data yet";
+
+  // Gas Saved sub-label: indicate whether value is from real receipts or estimate
+  const gasSavedSub = gasDataPoints > 0
+    ? `${gasDataPoints} batch${gasDataPoints > 1 ? "es" : ""} · real receipts`
+    : `avg batch ${avgBatchSize > 0 ? `${avgBatchSize}x` : "—"} · estimated`;
+
+  // avgGasPerBatch display
+  const gasPerBatchLabel = avgGasPerBatch != null
+    ? avgGasPerBatch.toLocaleString()
+    : "—";
+  const gasPerBatchSub = avgGasPerBatch != null
+    ? `${gasDataPoints} on-chain sample${gasDataPoints !== 1 ? "s" : ""}`
+    : "awaiting receipts";
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
       <StatCard
         label="Total Intents"
         value={totalIntents}
@@ -92,8 +105,14 @@ export function MetricsSummary({ metrics }: Props) {
       <StatCard
         label="Gas Saved"
         value={totalGasSavedPct > 0 ? `${totalGasSavedPct}%` : "—"}
-        sub={`avg batch ${avgBatchSize > 0 ? `${avgBatchSize}x` : "—"}`}
+        sub={gasSavedSub}
         accent={totalGasSavedPct >= 30 ? "green" : totalGasSavedPct > 0 ? "yellow" : "default"}
+      />
+      <StatCard
+        label="Avg Gas / Batch"
+        value={gasPerBatchLabel}
+        sub={gasPerBatchSub}
+        accent={avgGasPerBatch != null ? "blue" : "default"}
       />
     </div>
   );

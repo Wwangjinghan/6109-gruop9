@@ -260,11 +260,13 @@ export function generateDemoRecords(count = 40): IntentRecord[] {
         ? submittedAt + 800 + Math.random() * 3200
         : undefined;
     const latencyMs = executedAt != null ? Math.round(executedAt - submittedAt) : undefined;
-    // Simulate real gasUsed: ~180k–350k per batch (only for executed intents)
+    // Fixed representative gasUsed per batch (4 intents batched together)
+    // Based on: EntryPoint overhead ~120k + 4 × ~80k calls = ~440k
+    // vs 4 × individual ~180k = ~720k  →  ~39% savings
+    // Values cycle through 4 realistic batch sizes so the chart shows variance
+    const GAS_SAMPLES = [248_000, 312_000, 195_000, 410_000];
     const gasUsed =
-      status === "executed"
-        ? 180_000 + Math.floor(Math.random() * 170_000)
-        : undefined;
+      status === "executed" ? GAS_SAMPLES[batchIdx % GAS_SAMPLES.length] : undefined;
 
     records.push({
       intentId: nextId(),

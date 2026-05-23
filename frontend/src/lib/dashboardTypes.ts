@@ -6,7 +6,7 @@ export interface IntentRecord {
   userId: string;
   action: IntentAction;
   status: IntentStatus;
-  submittedAt: number;    // unix ms — sent to EntryPoint
+  submittedAt?: number;   // unix ms — sent to EntryPoint (absent for pending records)
   receivedAt?: number;    // unix ms — arrived at relayer
   executedAt?: number;    // unix ms — on-chain receipt confirmed
   latencyMs?: number;     // executedAt - submittedAt (provided by relayer)

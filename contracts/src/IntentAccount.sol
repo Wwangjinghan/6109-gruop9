@@ -72,9 +72,7 @@ contract IntentAccount is BaseAccount, IAccountExecute, Ownable {
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * @inheritdoc IAccountExecute
-     *
-     * Called by the EntryPoint when userOp.callData starts with this function's
+     * @dev Called by the EntryPoint when userOp.callData starts with this function's
      * selector (0x8dd7712f). The remaining callData (after the 4-byte selector)
      * is decoded as a Call[] batch so a single UserOperation can carry intent
      * context alongside the execution payload.

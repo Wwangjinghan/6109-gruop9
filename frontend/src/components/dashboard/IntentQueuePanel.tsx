@@ -41,7 +41,9 @@ interface Props {
 }
 
 export function IntentQueuePanel({ records, isLive = false }: Props) {
-  const sorted = [...records].sort((a, b) => b.submittedAt - a.submittedAt);
+  const sorted = [...records].sort(
+    (a, b) => (b.receivedAt ?? b.submittedAt ?? 0) - (a.receivedAt ?? a.submittedAt ?? 0),
+  );
 
   return (
     <div className="border border-border/60 rounded-md overflow-hidden">

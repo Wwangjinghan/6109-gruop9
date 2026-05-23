@@ -3,8 +3,11 @@ import {
   type PublicClient,
   type Address,
   type Hex,
+  keccak256,
+  toBytes,
 } from "viem";
 import { ENTRY_POINT_ABI, ENTRY_POINT_ADDRESS } from "../abi/entryPoint.js";
+import { INTENT_REGISTRY_ABI } from "../abi/intentRegistry.js";
 import { UserOpBuilder, type PackedUserOperation } from "../userop/UserOpBuilder.js";
 import type { CombinedBatch } from "../types/intent.js";
 import { logger } from "../utils/logger.js";
@@ -29,6 +32,8 @@ export interface SubmitterConfig {
   retryBaseMs?: number;
   /** Optional paymaster address. When set, paymasterAndData is populated. */
   paymasterAddress?: Address;
+  /** Optional IntentRegistry address. When set, recordBatchExecution is called after success. */
+  registryAddress?: Address;
 }
 
 /**
@@ -68,6 +73,7 @@ export class BundlerSubmitter {
   private readonly maxRetries: number;
   private readonly retryBaseMs: number;
   readonly paymasterAddress: Address | undefined;
+  readonly registryAddress: Address | undefined;
 
   constructor(config: SubmitterConfig) {
     this.walletClient = config.walletClient;
@@ -79,6 +85,7 @@ export class BundlerSubmitter {
     this.maxRetries = config.maxRetries ?? 3;
     this.retryBaseMs = config.retryBaseMs ?? 1_000;
     this.paymasterAddress = config.paymasterAddress;
+    this.registryAddress = config.registryAddress;
   }
 
   /**
@@ -202,6 +209,13 @@ export class BundlerSubmitter {
       r.gasUsed = receipt.gasUsed;
     });
 
+    // Record executed intents in the on-chain IntentRegistry (fire-and-forget)
+    if (success && this.registryAddress) {
+      this._recordBatchOnChain(batch).catch((err) => {
+        logger.warn({ batchId: batch.batchId, err }, "Registry record failed (non-fatal)");
+      });
+    }
+
     return txHash;
   }
 
@@ -228,7 +242,6 @@ export class BundlerSubmitter {
     const account = this.walletClient.account;
     if (!account) throw new Error("WalletClient has no account attached");
 
-    // Beneficiary receives unused gas refunds — set to the agent address
     const beneficiary: Address = this.agentAddress;
 
     return this.walletClient.writeContract({
@@ -239,5 +252,30 @@ export class BundlerSubmitter {
       account,
       chain: this.walletClient.chain ?? null,
     });
+  }
+
+  private async _recordBatchOnChain(batch: CombinedBatch): Promise<void> {
+    if (!this.registryAddress) return;
+    const account = this.walletClient.account;
+    if (!account) return;
+
+    // Derive deterministic bytes32 IDs from the relayer's UUID strings
+    const intentIds = batch.records.map(
+      (r) => keccak256(toBytes(r.id)) as Hex,
+    );
+
+    await this.walletClient.writeContract({
+      address: this.registryAddress,
+      abi: INTENT_REGISTRY_ABI,
+      functionName: "recordBatchExecution",
+      args: [intentIds],
+      account,
+      chain: this.walletClient.chain ?? null,
+    });
+
+    logger.info(
+      { batchId: batch.batchId, count: intentIds.length },
+      "Batch recorded on-chain in IntentRegistry",
+    );
   }
 }

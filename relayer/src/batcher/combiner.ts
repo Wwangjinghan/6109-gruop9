@@ -239,7 +239,7 @@ function _buildRebalanceCalls(
     const token = p.tokens[i] as Address;
     const targetBps = p.targetWeightsBps[i];
     // Assume equal current weights as a conservative baseline when no oracle is available
-    const currentBps = Math.floor(10_000 / p.tokens.length);
+    const currentBps = Math.floor(10_000 / (p.tokens.length - 1));
     const deltaBps = currentBps - targetBps;
 
     if (Math.abs(deltaBps) <= p.toleranceBps) continue;
@@ -331,7 +331,7 @@ function _encodeSwapCall(
   accountAddr: Address,
 ): { target: Address; value: bigint; data: Hex } {
   const path: Address[] = [params.tokenIn as Address, params.tokenOut as Address];
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 300); // 5 min slippage window
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600); // 1 hour slippage window
 
   const data = encodeFunctionData({
     abi: SWAP_ROUTER_ABI,

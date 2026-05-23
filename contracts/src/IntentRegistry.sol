@@ -19,6 +19,10 @@ contract IntentRegistry is IIntentRegistry {
     event IntentExecuted(bytes32 indexed intentId);
     event IntentCancelled(bytes32 indexed intentId);
     event BundlerUpdated(address indexed bundler, bool trusted);
+    event BatchRecorded(bytes32[] intentIds, uint256 executedAt);
+
+    // Off-chain intent audit trail: keccak256(UUID) → execution timestamp
+    mapping(bytes32 => uint256) public offChainIntentExecutedAt;
 
     error IntentAlreadyRegistered();
     error IntentNotFound();
@@ -102,5 +106,16 @@ contract IntentRegistry is IIntentRegistry {
             s := calldataload(add(sig.offset, 32))
             v := byte(0, calldataload(add(sig.offset, 64)))
         }
+    }
+
+    /// @notice Record that a batch of off-chain intents was executed on-chain.
+    ///         Called by the relayer after a successful UserOp receipt.
+    ///         intentIds are keccak256(abi.encodePacked(uuid)) of the relayer's internal IDs.
+    function recordBatchExecution(bytes32[] calldata intentIds) external onlyTrustedBundler {
+        uint256 ts = block.timestamp;
+        for (uint256 i = 0; i < intentIds.length; i++) {
+            offChainIntentExecutedAt[intentIds[i]] = ts;
+        }
+        emit BatchRecorded(intentIds, ts);
     }
 }

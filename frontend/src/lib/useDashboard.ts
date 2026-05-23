@@ -6,8 +6,8 @@ import type { IntentRecord, DashboardMetrics, TpsPoint, GasSavingsPoint, Latency
 const RELAYER_URL =
   process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://localhost:3001";
 
-// Estimated gas per individual intent execution (fixed-cost model matching relayer defaults)
-const GAS_PER_INTENT = 100_000;
+// Estimated gas per individual ERC-4337 UserOp (EntryPoint overhead ~50k + SWAP ~130k)
+const GAS_PER_INTENT = 180_000;
 // Fixed overhead for a batched UserOperation regardless of call count
 const GAS_BATCH_OVERHEAD = 120_000;
 // Marginal gas per extra call in a batch
@@ -18,12 +18,6 @@ function estimateBatchGas(intentCount: number): number {
   return GAS_BATCH_OVERHEAD + intentCount * GAS_PER_EXTRA_CALL;
 }
 
-function gasSavedPct(intentCount: number): number {
-  if (intentCount <= 1) return 0;
-  const individual = intentCount * GAS_PER_INTENT;
-  const batched = estimateBatchGas(intentCount);
-  return ((individual - batched) / individual) * 100;
-}
 
 async function fetchIntentStatus(intentId: string): Promise<IntentRecord | null> {
   try {
@@ -76,7 +70,7 @@ function buildTpsHistory(records: IntentRecord[]): TpsPoint[] {
   const WINDOW_MS = 10_000;
   const buckets = new Map<number, number>();
   for (const r of records) {
-    const ts = r.receivedAt ?? r.submittedAt;
+    const ts = r.receivedAt ?? r.submittedAt ?? 0;
     const bucket = Math.floor(ts / WINDOW_MS) * WINDOW_MS;
     buckets.set(bucket, (buckets.get(bucket) ?? 0) + 1);
   }
@@ -108,7 +102,7 @@ function buildLatencyHistory(records: IntentRecord[]): LatencyPoint[] {
     return {
       label: `#${i + 1}`,
       latencyMs,
-      timestamp: r.executedAt ?? r.submittedAt,
+      timestamp: r.executedAt ?? r.submittedAt ?? 0,
     };
   });
 }

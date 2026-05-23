@@ -8,6 +8,7 @@ import { createRouter } from "./api/routes.js";
 import { DcaScheduler } from "./scheduler/DcaScheduler.js";
 import { logger } from "./utils/logger.js";
 import { ENTRY_POINT_ADDRESS } from "./abi/entryPoint.js";
+import { AGENT_REGISTRY_ABI } from "./abi/agentRegistry.js";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,9 @@ const BATCH_WINDOW_MS     = Number(process.env.BATCH_WINDOW_MS   ?? 5000);
 const MAX_CONCURRENT      = Number(process.env.MAX_CONCURRENT    ?? 3);
 const MAX_RETRIES         = Number(process.env.MAX_RETRIES        ?? 3);
 const RETRY_BASE_MS       = Number(process.env.RETRY_BASE_MS      ?? 1000);
-const PAYMASTER_ADDRESS   = (process.env.PAYMASTER_ADDRESS       ?? "") as Address;
+const PAYMASTER_ADDRESS       = (process.env.PAYMASTER_ADDRESS       ?? "") as Address;
+const REGISTRY_ADDRESS        = (process.env.REGISTRY_ADDRESS        ?? "") as Address;
+const AGENT_REGISTRY_ADDRESS  = (process.env.AGENT_REGISTRY_ADDRESS  ?? "") as Address;
 
 const missing = [
   !RPC_URL             && "RPC_URL",
@@ -56,6 +59,7 @@ const submitter = new BundlerSubmitter({
   maxRetries: MAX_RETRIES,
   retryBaseMs: RETRY_BASE_MS,
   ...(PAYMASTER_ADDRESS && { paymasterAddress: PAYMASTER_ADDRESS }),
+  ...(REGISTRY_ADDRESS  && { registryAddress:  REGISTRY_ADDRESS  }),
 });
 
 const batcher = new IntentBatcher({
@@ -78,6 +82,35 @@ const server = app.listen(PORT, () => {
     "Relayer started",
   );
 });
+
+// Register this relayer as an on-chain agent (fire-and-forget)
+if (AGENT_REGISTRY_ADDRESS) {
+  (async () => {
+    try {
+      const already = await publicClient.readContract({
+        address: AGENT_REGISTRY_ADDRESS,
+        abi: AGENT_REGISTRY_ABI,
+        functionName: "isRegistered",
+        args: [agentAddress],
+      });
+      if (!already) {
+        await walletClient.writeContract({
+          address: AGENT_REGISTRY_ADDRESS,
+          abi: AGENT_REGISTRY_ABI,
+          functionName: "register",
+          args: [["SWAP", "DCA", "REBALANCE", "TRANSFER"]],
+          account: walletClient.account!,
+          chain: walletClient.chain ?? null,
+        });
+        logger.info({ agentAddress }, "Agent registered in AgentRegistry");
+      } else {
+        logger.info({ agentAddress }, "Agent already registered in AgentRegistry");
+      }
+    } catch (err) {
+      logger.warn({ err }, "AgentRegistry registration failed (non-fatal)");
+    }
+  })();
+}
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 

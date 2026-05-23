@@ -21,6 +21,9 @@ const ENTRY_POINT         = (process.env.ENTRY_POINT_ADDRESS   ?? ENTRY_POINT_AD
 const BATCH_SIZE          = Number(process.env.BATCH_SIZE        ?? 10);
 const BATCH_WINDOW_MS     = Number(process.env.BATCH_WINDOW_MS   ?? 5000);
 const MAX_CONCURRENT      = Number(process.env.MAX_CONCURRENT    ?? 3);
+const MAX_RETRIES         = Number(process.env.MAX_RETRIES        ?? 3);
+const RETRY_BASE_MS       = Number(process.env.RETRY_BASE_MS      ?? 1000);
+const PAYMASTER_ADDRESS   = (process.env.PAYMASTER_ADDRESS       ?? "") as Address;
 
 const missing = [
   !RPC_URL             && "RPC_URL",
@@ -50,6 +53,9 @@ const submitter = new BundlerSubmitter({
   agentAddress,
   entryPointAddress: ENTRY_POINT,
   maxConcurrent: MAX_CONCURRENT,
+  maxRetries: MAX_RETRIES,
+  retryBaseMs: RETRY_BASE_MS,
+  ...(PAYMASTER_ADDRESS && { paymasterAddress: PAYMASTER_ADDRESS }),
 });
 
 const batcher = new IntentBatcher({

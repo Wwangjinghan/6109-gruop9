@@ -8,6 +8,7 @@ import {
   packGasFees,
 } from "../chain/viemClients.js";
 import type { CombinedBatch } from "../types/intent.js";
+import { logger } from "../utils/logger.js";
 
 // ─── PackedUserOperation (mirrors Solidity struct) ───────────────────────────
 
@@ -31,14 +32,13 @@ export interface GasEstimate {
   maxPriorityFeePerGas: bigint;
 }
 
-// ─── Default gas constants ────────────────────────────────────────────────────
-// These are conservative defaults. In production, use eth_estimateUserOperationGas
-// or a bundler simulation endpoint.
-
+// ─── Default gas constants (fallback when estimation RPC is unavailable) ──────
 const DEFAULT_VERIFICATION_GAS = 200_000n;
 const DEFAULT_CALL_GAS_BASE    = 100_000n;
-const CALL_GAS_PER_CALL        =  80_000n; // extra gas per additional call in a batch
+const CALL_GAS_PER_CALL        =  80_000n;
 const DEFAULT_PRE_VERIFICATION =  50_000n;
+// 20 % buffer applied on top of on-chain estimates
+const GAS_BUFFER_PCT = 120n;
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
 
@@ -66,18 +66,28 @@ export class UserOpBuilder {
     const allCalls = this._flattenCalls(batch);
     const callData = this._encodeCallData(allCalls);
     const nonce = await getEntryPointNonce(this.publicClient, batch.account, this.entryPointAddress);
-    const gas = await this._estimateGas(allCalls.length);
 
-    return {
+    // Build a draft op with constant gas so we can pass it to eth_estimateUserOperationGas
+    const { maxFeePerGas, maxPriorityFeePerGas } = await fetchGasFees(this.publicClient);
+    const draftOp: PackedUserOperation = {
       sender: batch.account,
       nonce,
       initCode: "0x",
       callData,
+      accountGasLimits: packGasLimits(DEFAULT_VERIFICATION_GAS, DEFAULT_CALL_GAS_BASE),
+      preVerificationGas: DEFAULT_PRE_VERIFICATION,
+      gasFees: packGasFees(maxPriorityFeePerGas, maxFeePerGas),
+      paymasterAndData: "0x",
+      signature: "0x",
+    };
+
+    const gas = await this._estimateGas(allCalls.length, draftOp);
+
+    return {
+      ...draftOp,
       accountGasLimits: packGasLimits(gas.verificationGasLimit, gas.callGasLimit),
       preVerificationGas: gas.preVerificationGas,
       gasFees: packGasFees(gas.maxPriorityFeePerGas, gas.maxFeePerGas),
-      paymasterAndData: "0x",
-      signature: "0x", // caller must sign after hashing
     };
   }
 
@@ -135,10 +145,57 @@ export class UserOpBuilder {
     });
   }
 
-  private async _estimateGas(callCount: number): Promise<GasEstimate> {
+  private async _estimateGas(callCount: number, draftOp?: PackedUserOperation): Promise<GasEstimate> {
     const { maxFeePerGas, maxPriorityFeePerGas } = await fetchGasFees(this.publicClient);
-    const callGasLimit = DEFAULT_CALL_GAS_BASE + CALL_GAS_PER_CALL * BigInt(Math.max(callCount - 1, 0));
 
+    if (draftOp) {
+      try {
+        const est = await (this.publicClient as PublicClient & {
+          request: (args: { method: string; params: unknown[] }) => Promise<{
+            preVerificationGas: Hex;
+            verificationGasLimit: Hex;
+            callGasLimit: Hex;
+          }>;
+        }).request({
+          method: "eth_estimateUserOperationGas",
+          params: [
+            {
+              sender: draftOp.sender,
+              nonce: `0x${draftOp.nonce.toString(16)}`,
+              initCode: draftOp.initCode,
+              callData: draftOp.callData,
+              // use zeros so the estimation doesn't depend on real gas limits
+              accountGasLimits: "0x" + "0".repeat(64),
+              preVerificationGas: "0x0",
+              gasFees: draftOp.gasFees,
+              paymasterAndData: draftOp.paymasterAndData,
+              signature: draftOp.signature !== "0x"
+                ? draftOp.signature
+                // dummy 65-byte sig so validation doesn't revert
+                : ("0x" + "1b".padStart(2, "0") + "00".repeat(64)) as Hex,
+            },
+            this.entryPointAddress,
+          ],
+        });
+
+        const buf = (n: bigint) => (n * GAS_BUFFER_PCT) / 100n;
+        const preVerificationGas = buf(BigInt(est.preVerificationGas));
+        const verificationGasLimit = buf(BigInt(est.verificationGasLimit));
+        const callGasLimit = buf(BigInt(est.callGasLimit));
+
+        logger.debug(
+          { preVerificationGas: preVerificationGas.toString(), verificationGasLimit: verificationGasLimit.toString(), callGasLimit: callGasLimit.toString() },
+          "Gas estimated via eth_estimateUserOperationGas",
+        );
+
+        return { verificationGasLimit, callGasLimit, preVerificationGas, maxFeePerGas, maxPriorityFeePerGas };
+      } catch (err) {
+        logger.warn({ err }, "eth_estimateUserOperationGas failed — using constant fallback");
+      }
+    }
+
+    // Constant fallback
+    const callGasLimit = DEFAULT_CALL_GAS_BASE + CALL_GAS_PER_CALL * BigInt(Math.max(callCount - 1, 0));
     return {
       verificationGasLimit: DEFAULT_VERIFICATION_GAS,
       callGasLimit,

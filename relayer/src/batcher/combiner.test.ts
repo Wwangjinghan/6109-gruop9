@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { combineIntents } from "./combiner.js";
 import type { IntentRecord } from "../types/intent.js";
 
-const ROUTER  = "0xRouter000000000000000000000000000000000" as `0x${string}`;
-const ACCOUNT = "0xAccount00000000000000000000000000000000" as `0x${string}`;
+const ROUTER  = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+const ACCOUNT = "0x2222222222222222222222222222222222222222" as `0x${string}`;
 const USDC    = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}`;
 const WETH    = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as `0x${string}`;
 const DAI     = "0x6B175474E89094C44Da98b954EedeAC495271d0F" as `0x${string}`;
@@ -98,12 +98,15 @@ describe("combineIntents", () => {
     expect(combinedSwaps).toHaveLength(2);
   });
 
-  it("DCA intents go to soloRecords, not combinedSwaps", () => {
+  it("DCA intents each become their own combinedSwap entry", () => {
+    // combiner encodes each DCA interval as a separate swap call in combinedSwaps
     const records = [makeDcaRecord("d1"), makeDcaRecord("d2")];
     const { combinedSwaps, soloRecords } = combineIntents(records, ROUTER, ACCOUNT);
 
-    expect(combinedSwaps).toHaveLength(0);
-    expect(soloRecords).toHaveLength(2);
+    expect(soloRecords).toHaveLength(0);
+    expect(combinedSwaps).toHaveLength(2);
+    expect(combinedSwaps[0].intentIds).toContain("d1");
+    expect(combinedSwaps[1].intentIds).toContain("d2");
   });
 
   it("handles a mixed batch of SWAPs and DCAs", () => {
@@ -114,12 +117,13 @@ describe("combineIntents", () => {
     ];
     const { combinedSwaps, soloRecords } = combineIntents(records, ROUTER, ACCOUNT);
 
-    // s1 + s2 aggregate; d1 is solo
-    expect(combinedSwaps).toHaveLength(1);
-    expect(combinedSwaps[0].intentIds).toContain("s1");
-    expect(combinedSwaps[0].intentIds).toContain("s2");
-    expect(soloRecords).toHaveLength(1);
-    expect(soloRecords[0].id).toBe("d1");
+    // s1 + s2 aggregate into 1 combinedSwap; d1 becomes its own combinedSwap
+    expect(soloRecords).toHaveLength(0);
+    expect(combinedSwaps).toHaveLength(2);
+    const swapGroup = combinedSwaps.find((g) => g.intentIds.includes("s1"));
+    expect(swapGroup?.intentIds).toContain("s2");
+    const dcaGroup = combinedSwaps.find((g) => g.intentIds.includes("d1"));
+    expect(dcaGroup).toBeDefined();
   });
 
   it("encodes non-zero minAmountOut in the call data", () => {

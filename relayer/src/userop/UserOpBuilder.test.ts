@@ -3,8 +3,8 @@ import { UserOpBuilder } from "./UserOpBuilder.js";
 import type { CombinedBatch } from "../types/intent.js";
 import type { PublicClient } from "viem";
 
-const ACCOUNT = "0xAccount00000000000000000000000000000000" as `0x${string}`;
-const ROUTER  = "0xRouter000000000000000000000000000000000" as `0x${string}`;
+const ACCOUNT = "0x2222222222222222222222222222222222222222" as `0x${string}`;
+const ROUTER  = "0x1111111111111111111111111111111111111111" as `0x${string}`;
 const USDC    = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as `0x${string}`;
 const WETH    = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as `0x${string}`;
 

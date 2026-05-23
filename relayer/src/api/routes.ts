@@ -88,7 +88,7 @@ export function createRouter(batcher: IntentBatcher, scheduler?: DcaScheduler): 
    * Returns 202 Accepted with { intentId, status } immediately.
    * The intent is queued in the batcher; final status is available via GET /intents/:id.
    */
-  router.post("/intents", (req: Request, res: Response) => {
+  router.post("/intents", async (req: Request, res: Response) => {
     const parsed = IntentSchema.safeParse(req.body);
     if (!parsed.success) {
       logger.warn({ errors: parsed.error.flatten() }, "Intent validation failed");

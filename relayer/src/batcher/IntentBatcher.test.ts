@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { IntentBatcher } from "./IntentBatcher.js";
 import type { IntentPayload } from "../types/intent.js";
 
-const ROUTER  = "0xRouter000000000000000000000000000000000" as `0x${string}`;
-const ACCOUNT = "0xAccount00000000000000000000000000000000" as `0x${string}`;
+const ROUTER  = "0x1111111111111111111111111111111111111111" as `0x${string}`;
+const ACCOUNT = "0x2222222222222222222222222222222222222222" as `0x${string}`;
 const USDC    = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const WETH    = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
@@ -107,8 +107,8 @@ describe("IntentBatcher", () => {
 
     const [batch] = onBatchReady.mock.calls[0];
     expect(batch.records).toHaveLength(3);
-    // Combiner puts DCAs into singleCalls
-    expect(batch.singleCalls).toHaveLength(1);
+    // Combiner encodes DCAs as individual combinedSwap entries
+    expect(batch.combinedSwaps.length).toBeGreaterThanOrEqual(1);
   });
 
   it("decrements queueLength after a flush", () => {

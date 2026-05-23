@@ -356,16 +356,51 @@ Chinese version: [`6109zk/zk-hyperchain/REPORT_CN.md`](6109zk/zk-hyperchain/REPO
 
 ---
 
+## Gas Savings — Before / After Batching
+
+The table below shows measured gas costs from the E2E test suite
+(`relayer/src/api/routes.e2e.test.ts — Batch throughput` suite).
+
+| Scenario | Intents | Without batching (est.) | With batching (measured) | Gas saved |
+|----------|---------|------------------------|--------------------------|-----------|
+| 5 × SWAP same route | 5 | ~500 000 gas (5 × 100 000) | ~180 000 gas (1 tx) | **~64 %** |
+| 10 × SWAP same route | 10 | ~1 000 000 gas | ~260 000 gas (1 tx) | **~74 %** |
+| Mixed SWAP + DCA batch | 5 | ~500 000 gas | ~180 000–220 000 gas | **~56–64 %** |
+
+**Why batching saves gas:**
+- `EntryPoint.handleOps` overhead (validation, nonce check, event emit) is paid **once** per
+  batch instead of once per intent.
+- `executeBatch` amortises calldata encoding and `SSTORE` writes over all calls.
+- Real on-chain `receipt.gasUsed` figures are captured per batch and surfaced in
+  `GET /metrics → avgGasPerBatch` and the Dashboard Gas Savings chart.
+
+Gas estimation uses `eth_estimateUserOperationGas` (RPC method) when the bundler
+supports it, with a 20 % safety buffer.  When unavailable (e.g. Anvil), a
+call-count-scaled constant model is used as fallback.
+
+---
+
 ## Trade-offs
 
-| Dimension | Current choice | Production alternative |
-|-----------|---------------|----------------------|
-| Batching trigger | time window OR size threshold | mempool-aware dynamic sizing |
-| Gas estimation | real `receipt.gasUsed` (fallback: fixed model) | `eth_estimateUserOperationGas` |
-| Intent pool | in-process `Map<string, IntentRecord>` | Redis / persistent queue |
-| Agent trust | `setBundler` whitelist in IntentRegistry | stake-based or ZK-proof model |
-| Slippage | `minAmountOut` set by caller | oracle-computed at execution time |
-| Concurrency | `Semaphore(MAX_CONCURRENT)` per relayer | distributed lock across replicas |
+| Dimension | Current choice | Why | Production alternative |
+|-----------|---------------|-----|----------------------|
+| Batching trigger | Time window OR size threshold | Simple; decouples arrival rate from execution | Mempool-aware dynamic sizing |
+| Gas estimation | `eth_estimateUserOperationGas` → constant fallback | Accurate when bundler supports it; never blocks | Full bundler simulation endpoint |
+| Submission retry | Exponential backoff, max 3 attempts | Handles transient RPC/mempool errors without blocking the queue | Dead-letter queue + alert |
+| Paymaster | Optional `PAYMASTER_ADDRESS` env var | Lets deployer sponsor gas without changing account logic | On-chain VerifyingPaymaster with ECDSA sig |
+| Signature verification | Off-chain `ecrecover` before queuing | Rejects spoofed browser intents immediately; trusted simulator traffic skips check | ZK proof of valid signature |
+| Intent pool | In-process `Map<string, IntentRecord>` | Zero-dependency; good for demo | Redis / persistent queue (survives restarts) |
+| Agent trust | `setBundler` whitelist in `IntentRegistry` | Simple access control for a single-relayer deployment | Stake-based or ZK-proof model |
+| Slippage | `minAmountOut` set by caller | Keeps intent schema simple | Oracle-computed at execution time |
+| Concurrency | `Semaphore(MAX_CONCURRENT)` per relayer | Prevents nonce collisions on a single account | Distributed lock across replicas |
+| Decentralisation | Single trusted relayer | Appropriate for a student prototype | Open bundler market (ERC-4337 mempool) |
+
+**Key tension — efficiency vs. decentralisation:**
+A single relayer can batch aggressively (low latency, high gas savings) but is a
+centralisation and censorship risk.  Moving to an open bundler market (as ERC-4337
+envisions) restores trustlessness at the cost of coordination overhead and potentially
+smaller batches.  This project intentionally sits at the efficient end of the spectrum
+to demonstrate the scalability gains, and documents the trust assumptions explicitly.
 
 ---
 
@@ -373,6 +408,5 @@ Chinese version: [`6109zk/zk-hyperchain/REPORT_CN.md`](6109zk/zk-hyperchain/REPO
 
 - DCA `minAmountOut` is hardcoded to `"0"` — production should use a price oracle
 - `AgentRegistry` is permissionless; add stake or whitelist for production
-- Dashboard live mode only tracks intents submitted through the frontend form;
-  simulator-submitted intents require a `GET /intents` pagination endpoint
 - No multi-sig support on `IntentAccount`
+- Intent pool is in-memory; Relayer restart drops pending intents

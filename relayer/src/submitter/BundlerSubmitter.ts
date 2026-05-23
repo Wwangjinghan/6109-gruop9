@@ -15,12 +15,20 @@ export interface SubmitterConfig {
   agentAddress: Address;
   entryPointAddress?: Address;
   /**
-   * Maximum number of batches that can be in flight (building + waiting for receipt)
-   * simultaneously. Prevents nonce collisions on a single account while still
-   * allowing independent accounts to be processed in parallel.
+   * Maximum number of batches that can be in flight simultaneously.
    * Default: 3
    */
   maxConcurrent?: number;
+  /**
+   * Maximum submission attempts per batch before marking as permanently failed.
+   * Each retry waits 2^attempt * retryBaseMs milliseconds (exponential backoff).
+   * Default: 3
+   */
+  maxRetries?: number;
+  /** Base backoff delay in ms. Default: 1000 */
+  retryBaseMs?: number;
+  /** Optional paymaster address. When set, paymasterAndData is populated. */
+  paymasterAddress?: Address;
 }
 
 /**
@@ -57,6 +65,9 @@ export class BundlerSubmitter {
   private readonly entryPointAddress: Address;
   private readonly builder: UserOpBuilder;
   private readonly semaphore: Semaphore;
+  private readonly maxRetries: number;
+  private readonly retryBaseMs: number;
+  readonly paymasterAddress: Address | undefined;
 
   constructor(config: SubmitterConfig) {
     this.walletClient = config.walletClient;
@@ -65,43 +76,99 @@ export class BundlerSubmitter {
     this.entryPointAddress = config.entryPointAddress ?? ENTRY_POINT_ADDRESS;
     this.builder = new UserOpBuilder(this.publicClient, this.entryPointAddress);
     this.semaphore = new Semaphore(config.maxConcurrent ?? 3);
+    this.maxRetries = config.maxRetries ?? 3;
+    this.retryBaseMs = config.retryBaseMs ?? 1_000;
+    this.paymasterAddress = config.paymasterAddress;
   }
 
   /**
-   * Full pipeline for a CombinedBatch.
-   * Concurrent calls are allowed up to maxConcurrent; additional callers wait
-   * on the semaphore so nonce ordering is preserved within the limit.
+   * Full pipeline for a CombinedBatch, with exponential-backoff retry.
+   * Concurrent calls are gated by the Semaphore so nonce ordering is preserved.
    *
-   *   1. Build the unsigned PackedUserOperation (calls merged via UserOpBuilder)
-   *   2. Fetch the userOpHash from the EntryPoint
-   *   3. Sign the hash with the agent key (EIP-191)
-   *   4. Attach the signature and submit via EntryPoint.handleOps
-   *   5. Wait for receipt and update intent record statuses
+   *   1. Build the unsigned PackedUserOperation (gas estimated via RPC or constants)
+   *   2. Populate paymasterAndData if a paymaster address is configured
+   *   3. Fetch the userOpHash from the EntryPoint
+   *   4. Sign the hash with the agent key (EIP-191)
+   *   5. Submit via EntryPoint.handleOps
+   *   6. Wait for receipt and update intent records
+   *   7. On transient failure, retry up to maxRetries with exponential backoff
    */
   async submitBatch(batch: CombinedBatch): Promise<Hex> {
     await this.semaphore.acquire();
     try {
-      return await this._submitBatchInner(batch);
+      return await this._withRetry(batch);
     } finally {
       this.semaphore.release();
     }
   }
 
+  private async _withRetry(batch: CombinedBatch): Promise<Hex> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
+      try {
+        return await this._submitBatchInner(batch);
+      } catch (err) {
+        lastErr = err;
+        const isLast = attempt === this.maxRetries - 1;
+        if (isLast) break;
+
+        const delayMs = this.retryBaseMs * Math.pow(2, attempt);
+        logger.warn(
+          { batchId: batch.batchId, attempt: attempt + 1, maxRetries: this.maxRetries, delayMs, err },
+          "Batch submission failed — retrying",
+        );
+        await new Promise((res) => setTimeout(res, delayMs));
+
+        // Reset record statuses to pending before the next attempt
+        batch.records.forEach((r) => {
+          r.status = "pending";
+          r.submittedAt = undefined;
+          r.executedAt = undefined;
+          r.txHash = undefined;
+          r.userOpHash = undefined;
+          r.error = undefined;
+        });
+      }
+    }
+    throw lastErr;
+  }
+
   private async _submitBatchInner(batch: CombinedBatch): Promise<Hex> {
-    logger.info({ batchId: batch.batchId, account: batch.account }, "Building UserOp");
+    logger.info(
+      { batchId: batch.batchId, account: batch.account, paymaster: this.paymasterAddress ?? "none" },
+      "Building UserOp",
+    );
 
-    // 1. Build unsigned op
-    const userOp = await this.builder.build(batch);
+    // 1. Build unsigned op (gas estimated via RPC or constants)
+    let userOp = await this.builder.build(batch);
 
-    // 2. Get hash from EntryPoint
+    // 2. Populate paymasterAndData when a VerifyingPaymaster is configured.
+    //    Format for ERC-4337 v0.7 VerifyingPaymaster (no signature — open mode):
+    //      paymaster address (20 bytes) + validUntil (6 bytes) + validAfter (6 bytes)
+    //    A real deployment would also append the paymaster's ECDSA signature.
+    if (this.paymasterAddress) {
+      const validUntil = Math.floor(Date.now() / 1000) + 600; // valid for 10 minutes
+      const validAfter = 0;
+      userOp = {
+        ...userOp,
+        paymasterAndData: (
+          this.paymasterAddress +
+          validUntil.toString(16).padStart(12, "0") +
+          validAfter.toString(16).padStart(12, "0")
+        ) as Hex,
+      };
+      logger.debug({ batchId: batch.batchId, paymasterAndData: userOp.paymasterAndData }, "Paymaster data attached");
+    }
+
+    // 3. Get hash from EntryPoint
     const userOpHash = await this.builder.getUserOpHash(userOp);
     logger.debug({ batchId: batch.batchId, userOpHash }, "UserOp hash obtained");
 
-    // 3. Sign with agent key (EIP-191 personal_sign wraps the hash)
+    // 4. Sign with agent key (EIP-191 personal_sign wraps the hash)
     const signature = await this._signUserOpHash(userOpHash);
     const signedOp: PackedUserOperation = { ...userOp, signature };
 
-    // 4. Submit via EntryPoint.handleOps
+    // 5. Submit via EntryPoint.handleOps
     const submittedAt = Date.now();
     const txHash = await this._handleOps(signedOp);
     logger.info({ batchId: batch.batchId, txHash }, "UserOp submitted — waiting for receipt");
@@ -109,7 +176,7 @@ export class BundlerSubmitter {
     // Mark submittedAt on all records the moment the tx is broadcast
     batch.records.forEach((r) => { r.submittedAt = submittedAt; });
 
-    // 5. Wait for inclusion
+    // 6. Wait for inclusion
     const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
     const executedAt = Date.now();
     const success = receipt.status === "success";

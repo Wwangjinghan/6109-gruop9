@@ -25,20 +25,17 @@ interface RelayerMetrics {
   gasDataPoints: number;
 }
 
-function loadStoredIds(): string[] {
-  if (typeof sessionStorage === "undefined") return [];
-  try { return JSON.parse(sessionStorage.getItem("intentIds") ?? "[]"); }
-  catch { return []; }
-}
-
-async function fetchRecord(intentId: string): Promise<IntentRecord | null> {
+async function fetchAllRecords(): Promise<IntentRecord[]> {
   try {
-    const res = await fetch(`${RELAYER_URL}/intents/${intentId}`, { cache: "no-store" });
-    if (!res.ok) return null;
-    const raw = await res.json();
-    if (raw.gasUsed != null) raw.gasUsed = Number(raw.gasUsed);
-    return raw as IntentRecord;
-  } catch { return null; }
+    const res = await fetch(`${RELAYER_URL}/intents?limit=500`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const raw: unknown[] = await res.json();
+    return raw.map((r: unknown) => {
+      const rec = r as IntentRecord;
+      if (rec.gasUsed != null) rec.gasUsed = Number(rec.gasUsed);
+      return rec;
+    });
+  } catch { return []; }
 }
 
 async function fetchRelayerMetrics(): Promise<RelayerMetrics | null> {
@@ -77,23 +74,17 @@ function useLiveData(): { records: IntentRecord[]; serverMetrics: RelayerMetrics
   const [records, setRecords] = useState<IntentRecord[]>([]);
   const [serverMetrics, setServerMetrics] = useState<RelayerMetrics | null>(null);
   const refresh = useCallback(async () => {
-    const ids = loadStoredIds();
     const [results, metrics] = await Promise.all([
-      ids.length > 0 ? Promise.all(ids.map(fetchRecord)) : Promise.resolve([]),
+      fetchAllRecords(),
       fetchRelayerMetrics(),
     ]);
-    setRecords(results.filter((r): r is IntentRecord => r !== null));
+    setRecords(results);
     if (metrics) setServerMetrics(metrics);
   }, []);
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, LIVE_POLL_MS);
     return () => clearInterval(id);
-  }, [refresh]);
-  useEffect(() => {
-    function onStorage(e: StorageEvent) { if (e.key === "intentIds") refresh(); }
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
   }, [refresh]);
   return { records, serverMetrics };
 }

@@ -1,9 +1,65 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { ZodError } from "zod";
+import {
+  keccak256,
+  encodeAbiParameters,
+  parseAbiParameters,
+  recoverMessageAddress,
+  type Hex,
+} from "viem";
 import { IntentSchema } from "../types/intent.js";
 import type { IntentBatcher } from "../batcher/IntentBatcher.js";
 import type { DcaScheduler } from "../scheduler/DcaScheduler.js";
 import { logger } from "../utils/logger.js";
+
+// ─── Signature helpers ────────────────────────────────────────────────────────
+
+/**
+ * Reproduce the hash that intentClient.ts signs on the frontend:
+ *   keccak256(abi.encode(userId, action, JSON.stringify(params)))
+ *
+ * This is the canonical format for intents submitted via the browser.
+ * The agent_simulator uses a different (action-specific) hash; those intents
+ * are trusted internal traffic and skip this check when userId is not an
+ * Ethereum address.
+ */
+function hashIntentPayload(userId: string, action: string, params: unknown): Hex {
+  const paramsJson = JSON.stringify(params);
+  return keccak256(
+    encodeAbiParameters(
+      parseAbiParameters("string, string, string"),
+      [userId, action, paramsJson],
+    ),
+  );
+}
+
+const ETH_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Verify that the intent signature was produced by the wallet whose address
+ * equals `userId`. Returns true if verification passes or if userId is not an
+ * Ethereum address (simulator / internal traffic).
+ */
+async function verifyIntentSignature(
+  userId: string,
+  action: string,
+  params: unknown,
+  signature: string,
+): Promise<boolean> {
+  // Only verify when userId looks like a wallet address (i.e. browser-submitted)
+  if (!ETH_ADDRESS_RE.test(userId)) return true;
+
+  try {
+    const hash = hashIntentPayload(userId, action, params);
+    const recovered = await recoverMessageAddress({
+      message: { raw: hash },
+      signature: signature as Hex,
+    });
+    return recovered.toLowerCase() === userId.toLowerCase();
+  } catch {
+    return false;
+  }
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
@@ -42,9 +98,16 @@ export function createRouter(batcher: IntentBatcher, scheduler?: DcaScheduler): 
       });
     }
 
+    const { action, params, signature, userId } = parsed.data;
+    const sigValid = await verifyIntentSignature(userId, action, params, signature);
+    if (!sigValid) {
+      logger.warn({ userId, action }, "Intent rejected — signature mismatch");
+      return res.status(401).json({ error: "Invalid signature" });
+    }
+
     const record = batcher.add(parsed.data);
     logger.info(
-      { intentId: record.id, action: parsed.data.action, userId: parsed.data.userId },
+      { intentId: record.id, action, userId },
       "Intent accepted",
     );
     return res.status(202).json({ intentId: record.id, status: record.status });

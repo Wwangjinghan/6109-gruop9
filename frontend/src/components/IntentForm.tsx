@@ -63,6 +63,16 @@ export function IntentForm() {
   const [intentId, setIntentId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const rebalanceWeights = rebalanceF.targetWeightsBps
+    .split(",")
+    .map((w) => parseInt(w.trim(), 10))
+    .filter((n) => !isNaN(n));
+  const rebalanceWeightSum = rebalanceWeights.reduce((s, n) => s + n, 0);
+  const rebalanceWeightError =
+    action === "REBALANCE" && rebalanceF.targetWeightsBps.trim() !== "" && rebalanceWeightSum !== 10000
+      ? `Weights sum to ${rebalanceWeightSum}, must equal 10000`
+      : null;
+
   const buildParams = (): IntentParams => {
     if (action === "SWAP") {
       return {
@@ -90,7 +100,7 @@ export function IntentForm() {
     return {
       action: "REBALANCE",
       tokens: rebalanceF.tokens.split(",").map((t) => t.trim()),
-      targetWeightsBps: rebalanceF.targetWeightsBps.split(",").map((w) => parseInt(w.trim(), 10)),
+      targetWeightsBps: rebalanceWeights,
       ...(rebalanceF.toleranceBps && { toleranceBps: parseInt(rebalanceF.toleranceBps, 10) }),
     };
   };
@@ -98,6 +108,10 @@ export function IntentForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!walletClient || !isConnected) return;
+    if (rebalanceWeightError) {
+      setError(rebalanceWeightError);
+      return;
+    }
     setStatus("signing");
     setError(null);
     try {
@@ -188,7 +202,32 @@ export function IntentForm() {
           {action === "REBALANCE" && (
             <div className="space-y-3">
               <Field label="Tokens (comma-separated)" value={rebalanceF.tokens} onChange={(v) => setRebalanceF((f) => ({ ...f, tokens: v }))} placeholder="0xA…, 0xB…" required />
-              <Field label="Target weights bps (sum = 10000)" value={rebalanceF.targetWeightsBps} onChange={(v) => setRebalanceF((f) => ({ ...f, targetWeightsBps: v }))} placeholder="5000, 5000" required />
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Target weights bps <span className="text-muted-foreground/60">(sum = 10000)</span>
+                  </label>
+                  {rebalanceF.targetWeightsBps.trim() !== "" && (
+                    <span className={`text-xs font-mono ${rebalanceWeightSum === 10000 ? "text-emerald-400" : "text-red-400"}`}>
+                      {rebalanceWeightSum} / 10000
+                    </span>
+                  )}
+                </div>
+                <input
+                  value={rebalanceF.targetWeightsBps}
+                  onChange={(e) => setRebalanceF((f) => ({ ...f, targetWeightsBps: e.target.value }))}
+                  placeholder="5000, 5000"
+                  required
+                  className={`w-full h-8 rounded-md border px-3 text-sm bg-muted placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 ${
+                    rebalanceWeightError
+                      ? "border-red-500/60 focus:ring-red-500/40"
+                      : "border-border/60 focus:border-border focus:ring-border/40"
+                  }`}
+                />
+                {rebalanceWeightError && (
+                  <p className="text-xs text-red-400">{rebalanceWeightError}</p>
+                )}
+              </div>
               <Field label="Tolerance bps" value={rebalanceF.toleranceBps} onChange={(v) => setRebalanceF((f) => ({ ...f, toleranceBps: v }))} placeholder="50" />
             </div>
           )}

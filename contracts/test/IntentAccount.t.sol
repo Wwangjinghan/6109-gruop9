@@ -74,6 +74,10 @@ contract IntentAccountTest is Test {
     function _submitOp(PackedUserOperation memory op) internal {
         PackedUserOperation[] memory ops = new PackedUserOperation[](1);
         ops[0] = op;
+        // ensure the call to EntryPoint.handleOps appears to come from an EOA
+        // (set both msg.sender and tx.origin) so the EntryPoint.nonReentrant
+        // modifier does not revert during tests.
+        vm.prank(owner, owner);
         entryPoint.handleOps(ops, payable(address(this)));
     }
 

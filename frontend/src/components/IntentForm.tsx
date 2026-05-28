@@ -1,13 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useWalletClient, useAccount } from "wagmi";
 import { ArrowRightLeft, Copy, GitBranch, Loader2, Repeat, Send, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { submitIntent, type IntentParams } from "@/lib/intentClient";
+import {
+  createDcaSchedule,
+  fetchDcaScheduleStatus,
+  fetchIntentStatus,
+  submitIntent,
+  type IntentParams,
+} from "@/lib/intentClient";
 
 type ActionType = "SWAP" | "TRANSFER" | "DCA" | "REBALANCE";
+type DcaSubmitMode = "single" | "schedule";
+type RecentSubmission = {
+  type: "intent" | "schedule";
+  id: string;
+  action: ActionType;
+  status: string;
+  createdAt: number;
+  batchId?: string;
+  txHash?: string;
+  error?: string;
+  latencyMs?: number;
+  gasUsed?: number;
+  remainingIntervals?: number;
+  nextFireAt?: number;
+  executedIntervals?: number;
+  active?: boolean;
+};
 
 const ACTION_LABELS: Record<ActionType, string> = {
   SWAP: "Swap",
@@ -30,11 +53,27 @@ const ACTION_ICONS: Record<ActionType, React.ReactNode> = {
   REBALANCE: <GitBranch className="h-3.5 w-3.5" />,
 };
 
+const ACTION_ACCENTS: Record<ActionType, string> = {
+  SWAP: "border-cyan-500/30 bg-cyan-950/35 text-cyan-300",
+  TRANSFER: "border-violet-500/30 bg-violet-950/35 text-violet-300",
+  DCA: "border-amber-500/30 bg-amber-950/35 text-amber-300",
+  REBALANCE: "border-emerald-500/30 bg-emerald-950/35 text-emerald-300",
+};
+
+const ACTION_TAB_ACTIVE: Record<ActionType, string> = {
+  SWAP: "border-cyan-500/35 bg-cyan-950/45 text-cyan-200",
+  TRANSFER: "border-violet-500/35 bg-violet-950/45 text-violet-200",
+  DCA: "border-amber-500/35 bg-amber-950/45 text-amber-200",
+  REBALANCE: "border-emerald-500/35 bg-emerald-950/45 text-emerald-200",
+};
+
 const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL ?? "http://localhost:3001";
 const DEMO_USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const DEMO_WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 const DEMO_DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F";
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const RECENT_LIMIT = 5;
+const STATUS_POLL_MS = 3000;
 
 interface SwapFields {
   tokenIn: string; tokenOut: string; amountIn: string; minAmountOut: string; recipient: string;
@@ -85,10 +124,81 @@ export function IntentForm() {
   const [transferF, setTransferF] = useState<TransferFields>(defaultTransfer());
   const [dcaF, setDcaF] = useState<DcaFields>(defaultDca());
   const [rebalanceF, setRebalanceF] = useState<RebalanceFields>(defaultRebalance());
+  const [dcaSubmitMode, setDcaSubmitMode] = useState<DcaSubmitMode>("single");
 
   const [status, setStatus] = useState<"idle" | "signing" | "submitting" | "success" | "error">("idle");
-  const [intentId, setIntentId] = useState<string | null>(null);
+  const [currentSubmission, setCurrentSubmission] = useState<RecentSubmission | null>(null);
+  const [recentSubmissions, setRecentSubmissions] = useState<RecentSubmission[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const upsertSubmission = (entry: RecentSubmission) => {
+    setCurrentSubmission(entry);
+    setRecentSubmissions((prev) => [
+      entry,
+      ...prev.filter((item) => item.type !== entry.type || item.id !== entry.id),
+    ].slice(0, RECENT_LIMIT));
+  };
+
+  useEffect(() => {
+    const shouldPoll = recentSubmissions.some((item) => {
+      if (item.type === "intent") {
+        return item.status !== "executed" && item.status !== "failed";
+      }
+      return item.active !== false && (item.remainingIntervals ?? 1) > 0;
+    });
+    if (!shouldPoll) return;
+
+    let cancelled = false;
+    const refresh = async () => {
+      const updates = await Promise.all(
+        recentSubmissions.map(async (item): Promise<RecentSubmission> => {
+          if (item.type === "intent") {
+            const latest = await fetchIntentStatus(item.id);
+            if (!latest) return item;
+            return {
+              ...item,
+              action: latest.action as ActionType,
+              status: latest.status,
+              batchId: latest.batchId,
+              txHash: latest.txHash,
+              error: latest.error,
+              latencyMs: latest.latencyMs,
+              gasUsed: latest.gasUsed,
+            };
+          }
+
+          const latest = await fetchDcaScheduleStatus(item.id);
+          if (!latest) return item;
+          return {
+            ...item,
+            status: latest.active ? "active" : "completed",
+            remainingIntervals: latest.remainingIntervals,
+            nextFireAt: latest.nextFireAt,
+            executedIntervals: latest.executedIntervals,
+            active: latest.active,
+          };
+        }),
+      );
+      if (cancelled) return;
+
+      setRecentSubmissions((prev) =>
+        prev.map((item) => {
+          const update = updates.find((u) => u.type === item.type && u.id === item.id);
+          return update ?? item;
+        }),
+      );
+      setCurrentSubmission((current) => {
+        if (!current) return current;
+        return updates.find((u) => u.type === current.type && u.id === current.id) ?? current;
+      });
+    };
+
+    const id = setInterval(refresh, STATUS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [recentSubmissions]);
 
   const rebalanceWeights = rebalanceF.targetWeightsBps
     .split(",")
@@ -141,11 +251,32 @@ export function IntentForm() {
     }
     setStatus("signing");
     setError(null);
+    setCurrentSubmission(null);
     try {
       const params = buildParams();
       setStatus("submitting");
-      const result = await submitIntent(walletClient, params);
-      setIntentId(result.intentId);
+      if (params.action === "DCA" && dcaSubmitMode === "schedule") {
+        const result = await createDcaSchedule(walletClient, params);
+        upsertSubmission({
+          type: "schedule",
+          action: "DCA",
+          id: result.scheduleId,
+          status: "active",
+          createdAt: Date.now(),
+          remainingIntervals: result.remainingIntervals,
+          nextFireAt: result.nextFireAt,
+          active: true,
+        });
+      } else {
+        const result = await submitIntent(walletClient, params);
+        upsertSubmission({
+          type: "intent",
+          action: params.action,
+          id: result.intentId,
+          status: result.status,
+          createdAt: Date.now(),
+        });
+      }
       setStatus("success");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
@@ -155,7 +286,7 @@ export function IntentForm() {
 
   const applyDemo = () => {
     setError(null);
-    setIntentId(null);
+    setCurrentSubmission(null);
     if (action === "SWAP") setSwapF(demoSwap());
     if (action === "TRANSFER") setTransferF(demoTransfer(address));
     if (action === "DCA") setDcaF(demoDca());
@@ -164,7 +295,7 @@ export function IntentForm() {
 
   const resetCurrent = () => {
     setError(null);
-    setIntentId(null);
+    setCurrentSubmission(null);
     if (action === "SWAP") setSwapF(defaultSwap());
     if (action === "TRANSFER") setTransferF(defaultTransfer());
     if (action === "DCA") setDcaF(defaultDca());
@@ -197,11 +328,15 @@ export function IntentForm() {
           <button
             key={a}
             type="button"
-            onClick={() => setAction(a)}
-            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded text-xs font-medium transition-all duration-150 ${
+            onClick={() => {
+              setAction(a);
+              setError(null);
+              setCurrentSubmission(null);
+            }}
+            className={`inline-flex h-8 items-center justify-center gap-1.5 rounded border text-xs font-medium transition-all duration-150 ${
               action === a
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
+                ? `${ACTION_TAB_ACTIVE[a]} shadow-sm`
+                : "border-transparent text-muted-foreground hover:border-border/70 hover:text-foreground"
             }`}
           >
             {ACTION_ICONS[a]}
@@ -252,6 +387,30 @@ export function IntentForm() {
           {/* DCA fields */}
           {action === "DCA" && (
             <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-1.5 rounded-md bg-muted p-1 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setDcaSubmitMode("single")}
+                  className={`inline-flex min-h-9 items-center justify-center rounded px-3 text-xs font-medium transition-all duration-150 ${
+                    dcaSubmitMode === "single"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Submit one DCA intent
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDcaSubmitMode("schedule")}
+                  className={`inline-flex min-h-9 items-center justify-center rounded px-3 text-xs font-medium transition-all duration-150 ${
+                    dcaSubmitMode === "schedule"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Create recurring DCA schedule
+                </button>
+              </div>
               <Field label="Token In" value={dcaF.tokenIn} onChange={(v) => setDcaF((f) => ({ ...f, tokenIn: v }))} placeholder="0x…" required />
               <Field label="Token Out" value={dcaF.tokenOut} onChange={(v) => setDcaF((f) => ({ ...f, tokenOut: v }))} placeholder="0x…" required />
               <Field label="Amount Per Interval (wei)" value={dcaF.amountPerInterval} onChange={(v) => setDcaF((f) => ({ ...f, amountPerInterval: v }))} placeholder="1000000" required />
@@ -303,23 +462,9 @@ export function IntentForm() {
             </p>
           )}
 
-          {/* Success */}
-          {intentId && status === "success" && (
-            <div className="border border-emerald-900/40 bg-emerald-950/20 rounded px-3 py-2 space-y-0.5">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs text-emerald-400 font-medium">Intent submitted</p>
-                <a
-                  href={`${RELAYER_URL}/intents/${intentId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-foreground hover:text-emerald-300"
-                >
-                  <Copy className="h-3 w-3" />
-                  Status
-                </a>
-              </div>
-              <p className="text-xs text-muted-foreground font-mono break-all">{intentId}</p>
-            </div>
+          {/* Current submission */}
+          {currentSubmission && status === "success" && (
+            <CurrentSubmissionPanel submission={currentSubmission} />
           )}
 
           <Button
@@ -336,8 +481,154 @@ export function IntentForm() {
               )
               : "Sign & Submit"}
           </Button>
+
+          {recentSubmissions.length > 0 && (
+            <RecentSubmissionsList submissions={recentSubmissions} />
+          )}
         </form>
       )}
+    </div>
+  );
+}
+
+function shortId(id: string, head = 8, tail = 6) {
+  if (id.length <= head + tail + 3) return id;
+  return `${id.slice(0, head)}...${id.slice(-tail)}`;
+}
+
+function ActionBadge({ action, compact = false }: { action: ActionType; compact?: boolean }) {
+  return (
+    <span
+      className={`inline-flex w-fit items-center gap-1 rounded border font-medium ${ACTION_ACCENTS[action]} ${
+        compact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+      }`}
+    >
+      {ACTION_ICONS[action]}
+      {compact ? ACTION_LABELS[action].slice(0, 4).toUpperCase() : ACTION_LABELS[action]}
+    </span>
+  );
+}
+
+function statusClass(status: string) {
+  if (status === "executed" || status === "completed") {
+    return "border-emerald-900/40 bg-emerald-950/30 text-emerald-300";
+  }
+  if (status === "failed") {
+    return "border-red-900/40 bg-red-950/30 text-red-300";
+  }
+  if (status === "pending" || status === "batched" || status === "submitted" || status === "active") {
+    return "border-amber-900/40 bg-amber-950/30 text-amber-300";
+  }
+  return "border-border bg-muted text-muted-foreground";
+}
+
+function formatTime(ms?: number) {
+  if (ms == null) return "-";
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function CurrentSubmissionPanel({ submission }: { submission: RecentSubmission }) {
+  const statusHref =
+    submission.type === "intent"
+      ? `${RELAYER_URL}/intents/${submission.id}`
+      : `${RELAYER_URL}/schedules/dca/${submission.id}`;
+
+  return (
+    <div className="rounded-md border border-emerald-900/40 bg-emerald-950/20 px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-emerald-300">
+            {submission.type === "schedule" ? "DCA schedule created" : "Intent submitted"}
+          </p>
+          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{submission.id}</p>
+        </div>
+        <a
+          href={statusHref}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex shrink-0 items-center gap-1 text-xs text-foreground hover:text-emerald-300"
+        >
+          <Copy className="h-3 w-3" />
+          Status
+        </a>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+        <SubmissionDetail label="Action" value={<ActionBadge action={submission.action} />} />
+        <SubmissionDetail label="State" value={submission.status} badge />
+        {submission.type === "intent" ? (
+          <>
+            <SubmissionDetail label="Batch" value={submission.batchId ? shortId(submission.batchId, 6, 4) : "-"} />
+            <SubmissionDetail label="Tx" value={submission.txHash ? shortId(submission.txHash) : "-"} />
+            <SubmissionDetail label="Latency" value={submission.latencyMs != null ? `${submission.latencyMs} ms` : "-"} />
+            <SubmissionDetail label="Gas" value={submission.gasUsed != null ? submission.gasUsed.toLocaleString() : "-"} />
+          </>
+        ) : (
+          <>
+            <SubmissionDetail label="Remaining" value={submission.remainingIntervals ?? "-"} />
+            <SubmissionDetail label="Executed" value={submission.executedIntervals ?? 0} />
+            <SubmissionDetail label="Next run" value={formatTime(submission.nextFireAt)} />
+          </>
+        )}
+      </div>
+
+      {submission.error && (
+        <p className="mt-2 rounded border border-red-900/40 bg-red-950/20 px-2 py-1 text-xs text-red-300">
+          {submission.error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SubmissionDetail({
+  label,
+  value,
+  badge = false,
+}: {
+  label: string;
+  value: React.ReactNode;
+  badge?: boolean;
+}) {
+  return (
+    <div className="min-w-0 rounded border border-border/50 bg-background/60 px-2 py-1.5">
+      <p className="text-[11px] uppercase text-muted-foreground/60">{label}</p>
+      {badge && typeof value === "string" ? (
+        <span className={`mt-1 inline-flex rounded border px-1.5 py-0.5 text-[11px] font-medium ${statusClass(value)}`}>
+          {value}
+        </span>
+      ) : (
+        <p className="mt-1 truncate font-mono text-xs text-foreground">{value}</p>
+      )}
+    </div>
+  );
+}
+
+function RecentSubmissionsList({ submissions }: { submissions: RecentSubmission[] }) {
+  return (
+    <div className="rounded-md border border-border/60">
+      <div className="flex items-center justify-between border-b border-border/50 px-3 py-2">
+        <p className="text-xs font-medium">Recent submissions</p>
+        <p className="text-xs text-muted-foreground">{submissions.length} tracked</p>
+      </div>
+      <div className="divide-y divide-border/40">
+        {submissions.map((item) => (
+          <div key={`${item.type}-${item.id}`} className="grid grid-cols-[72px_1fr_auto] items-center gap-2 px-3 py-2">
+            <ActionBadge action={item.action} compact />
+            <div className="min-w-0">
+              <p className="truncate font-mono text-xs text-muted-foreground">{shortId(item.id)}</p>
+              {item.type === "schedule" && item.nextFireAt != null && (
+                <p className="text-[11px] text-muted-foreground/60">
+                  next {formatTime(item.nextFireAt)}
+                </p>
+              )}
+            </div>
+            <span className={`rounded border px-1.5 py-0.5 text-[11px] font-medium ${statusClass(item.status)}`}>
+              {item.status}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

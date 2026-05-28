@@ -264,13 +264,19 @@ export function createRouter(batcher: IntentBatcher, scheduler?: DcaScheduler): 
      * Register a time-interval DCA plan. Body must be a DCA IntentPayload.
      * Returns { scheduleId, nextFireAt, remainingIntervals } immediately.
      */
-    router.post("/schedules/dca", (req: Request, res: Response) => {
+    router.post("/schedules/dca", async (req: Request, res: Response) => {
       const parsed = IntentSchema.safeParse(req.body);
       if (!parsed.success) {
         return res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
       }
       if (parsed.data.action !== "DCA") {
         return res.status(400).json({ error: "Only DCA intents can be scheduled" });
+      }
+      const { action, params, signature, userId } = parsed.data;
+      const sigValid = await verifyIntentSignature(userId, action, params, signature);
+      if (!sigValid) {
+        logger.warn({ userId, action }, "DCA schedule rejected - signature mismatch");
+        return res.status(401).json({ error: "Invalid signature" });
       }
       const schedule = scheduler.register(parsed.data as Extract<typeof parsed.data, { action: "DCA" }>);
       logger.info({ scheduleId: schedule.id, userId: parsed.data.userId }, "DCA schedule created via API");

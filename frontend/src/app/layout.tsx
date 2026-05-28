@@ -1,11 +1,8 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
 import { Providers } from "./providers";
 import { WalletConnector } from "@/components/WalletConnector";
-
-const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "AgentIntent Protocol",
@@ -15,7 +12,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body>
         <Providers>
           <header className="border-b border-border/60 px-6 h-14 flex items-center justify-between sticky top-0 z-50 bg-background/95 backdrop-blur-sm">
             <div className="flex items-center gap-8">

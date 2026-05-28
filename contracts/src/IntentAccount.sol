@@ -89,27 +89,75 @@ contract IntentAccount is BaseAccount, IAccountExecute, Ownable {
         _requireFromEntryPoint();
 
         // The inner callData encodes the real execution payload: either a single
-        // execute() call or an executeBatch() call. We delegate to _executeInner
-        // so we don't duplicate the assembly revert logic.
+        // execute() call or an executeBatch() call. Calling `address(this).call`
+        // would make `msg.sender == address(this)` inside `execute` which fails
+        // the `_requireForExecute()` check. Instead, decode the inner payload
+        // here and perform the low-level calls directly.
         bytes memory innerCallData = userOp.callData[4:]; // strip executeUserOp selector
-        (bool ok, bytes memory result) = address(this).call(innerCallData);
-        if (!ok) {
-            assembly { revert(add(result, 32), mload(result)) }
+
+        // Read selector
+        bytes4 innerSig;
+        assembly {
+            innerSig := mload(add(innerCallData, 32))
+        }
+
+        bytes memory innerPayload = _dropSelector(innerCallData);
+
+        if (innerSig == this.execute.selector) {
+            (address target, uint256 value, bytes memory data) = abi.decode(innerPayload, (address, uint256, bytes));
+            _doExecute(target, value, data);
+            return;
+        }
+
+        if (innerSig == this.executeBatch.selector) {
+            Call[] memory calls = abi.decode(innerPayload, (Call[]));
+            _doExecuteBatch(calls);
+            return;
+        }
+
+        // Fallback: unsupported inner selector - revert with helpful message
+        revert("IntentAccount: unknown inner execute selector");
+    }
+
+    function _dropSelector(bytes memory data) internal pure returns (bytes memory payload) {
+        require(data.length >= 4, "IntentAccount: short calldata");
+        uint256 payloadLength = data.length - 4;
+        payload = new bytes(payloadLength);
+
+        assembly {
+            let src := add(data, 36)
+            let dst := add(payload, 32)
+            let end := add(src, payloadLength)
+            for { } lt(src, end) { src := add(src, 32) dst := add(dst, 32) } {
+                mstore(dst, mload(src))
+            }
         }
     }
 
     /// @notice Execute a single call. Callable by the EntryPoint or the owner.
     function execute(address target, uint256 value, bytes calldata data) external override {
         _requireForExecute();
+        _doExecute(target, value, data);
+    }
+
+    /// @notice Execute a batch of calls. Callable by the EntryPoint or the owner.
+    function executeBatch(Call[] calldata calls) external override {
+        _requireForExecute();
+        _doExecuteBatch(calls);
+    }
+
+    // Internal helpers that actually perform the low-level calls. These are
+    // separated so `executeUserOp` can call them directly without performing
+    // the external permission check again (the EntryPoint path already
+    // validated permissions via validateUserOp).
+    function _doExecute(address target, uint256 value, bytes memory data) internal {
         (bool ok, bytes memory result) = target.call{value: value}(data);
         if (!ok) {
             assembly { revert(add(result, 32), mload(result)) }
         }
     }
 
-    /// @notice Execute a batch of calls. Callable by the EntryPoint or the owner.
-    function executeBatch(Call[] calldata calls) external override {
-        _requireForExecute();
+    function _doExecuteBatch(Call[] memory calls) internal {
         for (uint256 i = 0; i < calls.length; i++) {
             (bool ok, bytes memory result) = calls[i].target.call{value: calls[i].value}(calls[i].data);
             if (!ok) {

@@ -56,6 +56,42 @@ export interface SubmittedIntent {
   status: string;
 }
 
+export interface CreatedDcaSchedule {
+  scheduleId: string;
+  remainingIntervals: number;
+  nextFireAt: number;
+  intervalSeconds: number;
+}
+
+export interface IntentStatusResponse {
+  intentId: string;
+  action: IntentParams["action"];
+  userId: string;
+  status: "pending" | "batched" | "submitted" | "executed" | "failed";
+  batchId?: string;
+  userOpHash?: string;
+  txHash?: string;
+  error?: string;
+  receivedAt?: number;
+  submittedAt?: number;
+  executedAt?: number;
+  latencyMs?: number;
+  gasUsed?: number;
+}
+
+export interface DcaScheduleStatusResponse {
+  id: string;
+  userId: string;
+  params: Omit<DcaIntentParams, "action">;
+  account?: string;
+  startAt: number;
+  remainingIntervals: number;
+  nextFireAt: number;
+  executedIntervals: number;
+  createdAt: number;
+  active: boolean;
+}
+
 // ─── Intent hash helpers ──────────────────────────────────────────────────────
 
 /**
@@ -74,6 +110,32 @@ function hashIntentPayload(userId: string, params: IntentParams): Hex {
   );
 }
 
+async function buildSignedIntentBody(
+  walletClient: WalletClient,
+  params: IntentParams,
+  options: { userId?: string; account?: string; deadline?: number; nonce?: number } = {},
+) {
+  const address = walletClient.account!.address;
+  const userId = options.userId ?? address;
+
+  const payloadHash = hashIntentPayload(userId, params);
+  const signature = await walletClient.signMessage({
+    account: walletClient.account!,
+    message: { raw: payloadHash },
+  });
+
+  const { action, ...rest } = params;
+  return {
+    userId,
+    action,
+    params: rest,
+    signature,
+    ...(options.account   && { account: options.account }),
+    ...(options.deadline  && { deadline: options.deadline }),
+    ...(options.nonce     !== undefined && { nonce: options.nonce }),
+  };
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -87,25 +149,7 @@ export async function submitIntent(
   params: IntentParams,
   options: { userId?: string; account?: string; deadline?: number; nonce?: number } = {},
 ): Promise<SubmittedIntent> {
-  const address = walletClient.account!.address;
-  const userId = options.userId ?? address;
-
-  const payloadHash = hashIntentPayload(userId, params);
-  const signature = await walletClient.signMessage({
-    account: walletClient.account!,
-    message: { raw: payloadHash },
-  });
-
-  const { action, ...rest } = params;
-  const body = {
-    userId,
-    action,
-    params: rest,
-    signature,
-    ...(options.account   && { account: options.account }),
-    ...(options.deadline  && { deadline: options.deadline }),
-    ...(options.nonce     !== undefined && { nonce: options.nonce }),
-  };
+  const body = await buildSignedIntentBody(walletClient, params, options);
 
   const res = await fetch(`${RELAYER_URL}/intents`, {
     method: "POST",
@@ -118,4 +162,47 @@ export async function submitIntent(
     throw new Error(`Relayer error ${res.status}: ${detail}`);
   }
   return res.json();
+}
+
+export async function createDcaSchedule(
+  walletClient: WalletClient,
+  params: DcaIntentParams,
+  options: { userId?: string; account?: string; deadline?: number; nonce?: number } = {},
+): Promise<CreatedDcaSchedule> {
+  const body = await buildSignedIntentBody(walletClient, params, options);
+
+  const res = await fetch(`${RELAYER_URL}/schedules/dca`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(`Relayer error ${res.status}: ${detail}`);
+  }
+  return res.json();
+}
+
+export async function fetchIntentStatus(
+  intentId: string,
+): Promise<IntentStatusResponse | null> {
+  const res = await fetch(`${RELAYER_URL}/intents/${intentId}`, {
+    cache: "no-store",
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+
+  const raw = await res.json();
+  if (raw.gasUsed != null) raw.gasUsed = Number(raw.gasUsed);
+  return raw as IntentStatusResponse;
+}
+
+export async function fetchDcaScheduleStatus(
+  scheduleId: string,
+): Promise<DcaScheduleStatusResponse | null> {
+  const res = await fetch(`${RELAYER_URL}/schedules/dca/${scheduleId}`, {
+    cache: "no-store",
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+  return res.json() as Promise<DcaScheduleStatusResponse>;
 }
